@@ -170,12 +170,7 @@ fn gn_sources(gn: &str, target: &str) -> Vec<String> {
     };
     let list = &block[open..];
     let list = &list[..list.find(']').unwrap_or(list.len())];
-    list.split('"')
-        .skip(1)
-        .step_by(2)
-        .filter(|name| name.ends_with(".cc"))
-        .map(str::to_owned)
-        .collect()
+    list.split('"').skip(1).step_by(2).filter(|name| name.ends_with(".cc")).map(str::to_owned).collect()
 }
 
 /// Copies what a prebuilt archive holds: the library, its C header, the licenses and build facts.
@@ -184,10 +179,7 @@ fn export(dir: &Path, manifest: &Path, chromium: &Path, out: &Path, target: &str
     // Only an earlier export is replaced, so a mistyped directory is not wiped.
     let has_files = fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some());
     if has_files && !dir.join("BUILD_INFO").exists() {
-        fail(&format!(
-            "ZUCCHINI_SYS_EXPORT_DIR {} is not empty and holds no earlier export",
-            dir.display()
-        ));
+        fail(&format!("ZUCCHINI_SYS_EXPORT_DIR {} is not empty and holds no earlier export", dir.display()));
     }
     let _ = fs::remove_dir_all(dir);
     for sub in ["lib", "include"] {

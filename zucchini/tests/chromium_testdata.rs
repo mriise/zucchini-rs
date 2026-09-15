@@ -24,7 +24,12 @@ fn check_pair(old_name: &str, new_name: &str) {
         ensemble.len(),
         raw.len()
     );
-    assert!(ensemble.len() < raw.len(), "ensemble patch {} is not smaller than raw {}", ensemble.len(), raw.len());
+    assert!(
+        ensemble.len() < raw.len(),
+        "ensemble patch {} is not smaller than raw {}",
+        ensemble.len(),
+        raw.len()
+    );
 }
 
 #[test]
