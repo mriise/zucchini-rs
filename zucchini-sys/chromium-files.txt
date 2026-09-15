@@ -1,0 +1,28 @@
+# The Chromium paths zucchini-sys builds from. scripts/chromium.sh checks out only these
+# (gitignore syntax, rooted at chromium/src). Everything else Zucchini includes from //base is a
+# small replacement in shim/.
+
+/LICENSE
+/components/zucchini/
+
+# Header-only parts of //build and //base, used unchanged.
+/build/build_config.h
+/build/buildflag.h
+/base/compiler_specific.h
+/base/dcheck_is_on.h
+/base/format_macros.h
+/base/containers/adapters.h
+/base/containers/adapters_internal.h
+/base/containers/checked_iterators.h
+/base/containers/span.h
+/base/containers/span_forward_internal.h
+/base/memory/raw_ptr_exclusion.h
+/base/numerics/*.h
+/base/strings/string_view_util.h
+/base/types/to_address.h
+/base/allocator/partition_allocator/src/partition_alloc/bounds_checks.h
+/base/allocator/partition_allocator/src/partition_alloc/build_config.h
+/base/allocator/partition_allocator/src/partition_alloc/buildflag.h
+/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/compiler_specific.h
+/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/component_export.h
+/base/allocator/partition_allocator/src/partition_alloc/pointers/raw_ptr_exclusion.h

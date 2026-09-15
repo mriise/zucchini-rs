@@ -1,0 +1,107 @@
+name: Prebuilt libraries
+
+# Builds zucchini-sys's static library for each target with the pinned LLVM, tests the exported
+# library the way a consumer links it, and attests each archive's build provenance. On a lib-v*
+# tag it also publishes the archives and their SHA256SUMS as a GitHub release; pin that release in
+# zucchini-sys/prebuilt.txt with scripts/pin-prebuilt.sh <tag>.
+#
+# No caches: a release build downloads and verifies its toolchain itself, so nothing another
+# workflow run wrote can reach the published archives.
+
+on:
+  push:
+    tags: ["lib-v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, target: x86_64-pc-windows-msvc, test: true }
+          # Linked on Ubuntu 22.04, code needs libstdc++ from GCC 11 (GLIBCXX_3.4.29) and glibc
+          # 2.34 at runtime; on 24.04 that rises to GLIBCXX_3.4.31 and glibc 2.39.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, test: true }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, test: true }
+          - { os: macos-15, target: aarch64-apple-darwin, test: true }
+          - { os: macos-15, target: x86_64-apple-darwin, test: false }
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPORT: ${{ runner.temp }}/zucchini-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch the pinned Chromium files
+        run: scripts/chromium.sh
+
+      - name: Install LLVM
+        run: scripts/install-llvm.sh "$RUNNER_TEMP/llvm"
+
+      - name: Add the Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        env:
+          ZUCCHINI_SYS_EXPORT_DIR: ${{ env.EXPORT }}
+        run: cargo build --locked --release -p zucchini-sys --target ${{ matrix.target }}
+
+      - name: Test against the exported library
+        if: matrix.test
+        env:
+          ZUCCHINI_SYS_LIB_DIR: ${{ env.EXPORT }}/lib
+        run: cargo test --locked --release --workspace --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          cd "$RUNNER_TEMP/zucchini-${{ matrix.target }}"
+          cat BUILD_INFO
+          tar -czf "../zucchini-${{ matrix.target }}.tar.gz" .
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/zucchini-${{ matrix.target }}.tar.gz
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zucchini-${{ matrix.target }}
+          path: ${{ runner.temp }}/zucchini-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/lib-v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: zucchini-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum zucchini-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Static libraries for zucchini-sys. Pin them with scripts/pin-prebuilt.sh $GITHUB_REF_NAME." \
+            zucchini-*.tar.gz SHA256SUMS

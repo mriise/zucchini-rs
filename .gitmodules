@@ -1,0 +1,9 @@
+# Only the paths in zucchini-sys/chromium-files.txt are checked out: run scripts/chromium.sh.
+# update = none stops `git submodule update` and cargo from cloning all of Chromium.
+# The URL is Chromium's official GitHub mirror of chromium.googlesource.com/chromium/src, with the
+# same commits: fetching a pinned commit takes seconds there and minutes from googlesource.
+[submodule "chromium"]
+	path = zucchini-sys/chromium
+	url = https://github.com/chromium/chromium.git
+	shallow = true
+	update = none
