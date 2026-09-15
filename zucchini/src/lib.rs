@@ -180,6 +180,10 @@ pub fn read_header(patch: &[u8]) -> Result<PatchHeader, Error> {
 
 /// Applies `patch` to `old` and returns the new file. Both files are checked against the CRC-32s
 /// the patch recorded.
+///
+/// The result is allocated at the header's `new_size` before the old file's CRC-32 is checked, so a
+/// crafted patch can ask for up to [`MAX_LEN`] bytes. Bound [`PatchHeader::new_size`] first when
+/// the patch is untrusted.
 pub fn apply(old: &[u8], patch: &[u8]) -> Result<Vec<u8>, Error> {
     let header = read_header(patch)?;
     if old.len() != header.old_size as usize {
