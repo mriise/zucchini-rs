@@ -17,13 +17,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-2025, target: x86_64-pc-windows-msvc }
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-15, target: aarch64-apple-darwin }
+          - { os: windows-2025, target: x86_64-pc-windows-msvc, cxx: clang-cl }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, cxx: clang++ }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, cxx: clang++ }
+          - { os: macos-15, target: aarch64-apple-darwin, cxx: clang++ }
     defaults:
       run:
         shell: bash
+    env:
+      # Chromium's C++ is most of the build, so sccache keeps its objects in the Actions cache.
+      # build.rs only lets cc apply a compiler wrapper when CXX is set.
+      CXX: sccache ${{ matrix.cxx }}
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,6 +46,11 @@ jobs:
 
       - name: Install LLVM
         run: scripts/install-llvm.sh "$RUNNER_TEMP/llvm"
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.18.0
 
       - name: Test
         run: cargo test --workspace --locked
