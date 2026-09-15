@@ -30,7 +30,7 @@ done
 
 pins=zucchini-sys/prebuilt.txt
 {
-  grep '^#' "$pins"
+  grep '^#' "$pins" || true
   echo "release https://github.com/$repo/releases/download/$tag"
   cat "$tmp/SHA256SUMS"
 } > "$pins.new"
