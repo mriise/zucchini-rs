@@ -138,7 +138,8 @@ Verified:
 - Linux, LLVM 21.1.7 in Ubuntu 24.04 (libstdc++ 14) and 22.04 (libstdc++ 11) containers: every test
   passes, and Chromium's test pairs give the same patch sizes as on Windows.
 - `scripts/chromium.sh` from a fresh copy: 22 s.
+- GitHub Actions: CI passes on all four targets, and the prebuilt workflow builds and attests every
+  archive.
 
-Not run yet: both GitHub workflows, `install-llvm.sh` on a Windows runner, macOS, the prebuilt
-download path, `scripts/pin-prebuilt.sh`. Artifact attestations need a public repository or GitHub
-Enterprise Cloud.
+Not run yet: the prebuilt download path and `scripts/pin-prebuilt.sh`, which need a `lib-v*`
+release. Artifact attestations need a public repository or GitHub Enterprise Cloud.
