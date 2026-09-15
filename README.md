@@ -77,8 +77,9 @@ Zucchini is compiled with `-O2` even in debug builds, because unoptimised genera
 - Zucchini cannot patch from or to an empty file, so those calls return `Error::EmptyFile`: it
   writes such a patch, but its own reader rejects it.
 - Files are limited to 4 GiB; the patch header stores 32-bit sizes.
-- PE and ELF executables are recognised. DEX and ZTF are compiled out, as in Chrome's official
-  Windows builds, so patches containing them do not apply.
+- PE and ELF executables are recognised. DEX and ZTF are not enabled, as in Chrome's official
+  Windows builds: their disassemblers are compiled but never registered, so patches containing
+  them do not apply.
 - Patches are not compressed. In the jxsync benchmarks, xz compressed them best.
 - Zucchini's log output is off unless `set_log_level` turns it on.
 

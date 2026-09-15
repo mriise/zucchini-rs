@@ -9,8 +9,8 @@
 //! from or to an empty file, so those calls fail with [`Error::EmptyFile`].
 //!
 //! This build recognises PE (Windows) and ELF (Linux) executables. Chromium's DEX (Android) and
-//! ZTF (a test format) support is compiled out, so a patch Chromium's own tools made with those
-//! elements does not apply here.
+//! ZTF (a test format) support is not enabled: their disassemblers are compiled but never
+//! registered, so a patch Chromium's own tools made with those elements does not apply here.
 //!
 //! ```no_run
 //! let old = std::fs::read("app-1.0.exe")?;
