@@ -15,6 +15,7 @@ assert_eq!(zucchini::apply(&old, &patch)?, new);
 
 Licensed BSD-3-Clause, like Chromium. Chromium's files keep their own license,
 `zucchini-sys/chromium/LICENSE`, which every prebuilt archive also carries as `LICENSE.chromium`.
+Binaries that link `zucchini-sys` must reproduce both notices.
 
 ## Where the C++ comes from
 
