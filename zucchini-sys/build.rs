@@ -179,6 +179,14 @@ fn gn_sources(gn: &str, target: &str) -> Vec<String> {
 /// Copies what a prebuilt archive holds: the library, its C header, the licenses and build facts.
 fn export(dir: &Path, manifest: &Path, chromium: &Path, out: &Path, target: &str, build: &cc::Build) {
     let lib = if target.contains("msvc") { format!("{LIB}.lib") } else { format!("lib{LIB}.a") };
+    // Only an earlier export is replaced, so a mistyped directory is not wiped.
+    let has_files = fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some());
+    if has_files && !dir.join("BUILD_INFO").exists() {
+        fail(&format!(
+            "ZUCCHINI_SYS_EXPORT_DIR {} is not empty and holds no earlier export",
+            dir.display()
+        ));
+    }
     let _ = fs::remove_dir_all(dir);
     for sub in ["lib", "include"] {
         fs::create_dir_all(dir.join(sub)).unwrap();
