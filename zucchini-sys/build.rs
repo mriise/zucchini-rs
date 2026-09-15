@@ -61,7 +61,9 @@ fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
 
     if let Some(dir) = env::var_os("ZUCCHINI_SYS_LIB_DIR") {
-        link(Path::new(&dir), &target);
+        let dir = Path::new(&dir);
+        println!("cargo:rerun-if-changed={}", dir.join(lib_file(&target)).display());
+        link(dir, &target);
         return;
     }
 
@@ -178,7 +180,7 @@ fn gn_sources(gn: &str, target: &str) -> Vec<String> {
 
 /// Copies what a prebuilt archive holds: the library, its C header, the licenses and build facts.
 fn export(dir: &Path, manifest: &Path, chromium: &Path, out: &Path, target: &str, build: &cc::Build) {
-    let lib = if target.contains("msvc") { format!("{LIB}.lib") } else { format!("lib{LIB}.a") };
+    let lib = lib_file(target);
     // Only an earlier export is replaced, so a mistyped directory is not wiped.
     let has_files = fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some());
     if has_files && !dir.join("BUILD_INFO").exists() {
@@ -214,6 +216,11 @@ fn export(dir: &Path, manifest: &Path, chromium: &Path, out: &Path, target: &str
         env::var("CARGO_PKG_VERSION").unwrap()
     );
     fs::write(dir.join("BUILD_INFO"), info).unwrap();
+}
+
+/// The static library's file name for `target`.
+fn lib_file(target: &str) -> String {
+    if target.contains("msvc") { format!("{LIB}.lib") } else { format!("lib{LIB}.a") }
 }
 
 /// Links the static library in `dir` and the C++ runtime a clang-built archive needs.
