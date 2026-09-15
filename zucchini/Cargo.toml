@@ -6,7 +6,6 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-publish = false
 
 [features]
 # Link the prebuilt, attested static library instead of compiling Chromium sources.

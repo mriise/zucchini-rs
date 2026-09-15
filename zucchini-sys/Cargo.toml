@@ -7,7 +7,6 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 links = "zucchini"
-publish = false
 
 [features]
 # Link the static library this repository's prebuilt workflow built and attested, pinned by SHA-256
