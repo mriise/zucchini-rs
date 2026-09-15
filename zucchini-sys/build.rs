@@ -165,6 +165,15 @@ fn gn_sources(gn: &str, target: &str) -> Vec<String> {
     };
     let block = &gn[start..];
     let block = &block[..block.find("\n}").unwrap_or(block.len())];
+    // gn_sources reads only the first `sources = [ ... ]` list. A pin that appends files with
+    // `sources +=` or inside a conditional would drop them silently and surface as a link error, so
+    // stop with a clear message instead.
+    if block.contains("sources +=") {
+        fail(&format!(
+            "the {target} target in components/zucchini/BUILD.gn appends sources with `sources +=`, \
+             which build.rs does not read; update gn_sources to follow the new layout."
+        ));
+    }
     let Some(open) = block.find("sources = [") else {
         return Vec::new();
     };
