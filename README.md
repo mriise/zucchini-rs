@@ -84,6 +84,15 @@ Zucchini is compiled with `-O2` even in debug builds, because unoptimised genera
 - Patches are not compressed. In the jxsync benchmarks, xz compressed them best.
 - Zucchini's log output is off unless `set_log_level` turns it on.
 
+## What diffs well
+
+Zucchini gains most between builds of the same PE (x86, x64: `.exe`, `.dll`, `.sys`) or
+little-endian ELF (x86, x86-64, ARM, AArch64: executables, `.so`) program, even stored uncompressed
+inside a larger file. Chromium's x64 test pair patches to 108 KB, against 149 KB raw.
+
+Mach-O, object files, static libraries and compressed or packed binaries diff as raw bytes. .NET IL
+assemblies and ARM64 Windows binaries are misread as x86 and x64; compare them against `generate_raw`.
+
 ## Prebuilt releases
 
 1. Push a `lib-v*` tag. `.github/workflows/prebuilt.yml` builds every target with the pinned LLVM,
