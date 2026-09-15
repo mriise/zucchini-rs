@@ -138,7 +138,7 @@ Verified:
   pinned local archive (a tampered archive is refused), and through `ZUCCHINI_SYS_LIB_DIR`.
 - Linux, LLVM 21.1.7 in Ubuntu 24.04 (libstdc++ 14) and 22.04 (libstdc++ 11) containers: every test
   passes, and Chromium's test pairs give the same patch sizes as on Windows.
-- GameAssembly.dll between two VBashi builds (152 to 153 MB): a 46.62 MB patch (53.97 MB raw),
+- An x64 DLL between two builds (152 to 153 MB): a 46.62 MB patch (53.97 MB raw),
   the same as the Firefox-vendored Zucchini measured earlier, generated in 188 s.
 - `scripts/chromium.sh` from a fresh copy: 22 s.
 
