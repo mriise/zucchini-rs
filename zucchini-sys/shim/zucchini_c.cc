@@ -120,7 +120,10 @@ int zucc_patch_write(const zucc_patch* patch, uint8_t* out, size_t out_len) {
 }
 
 void zucc_patch_free(zucc_patch* patch) {
-  delete patch;
+  Guard([&]() -> int {
+    delete patch;
+    return ZUCC_OK;
+  });
 }
 
 int zucc_read_header(const uint8_t* patch, size_t patch_len, zucc_patch_header* header_out) {
