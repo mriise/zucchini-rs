@@ -32,8 +32,7 @@ commit: `32586b65`, Chromium main on 2026-09-14. It is filtered twice over:
 Everything else Zucchini includes from `//base` (CHECK and logging, bind and callbacks, raw_ptr,
 StringPrintf, a few string helpers) would bring 190 more headers and compiled `//base` sources.
 `zucchini-sys/shim/` replaces those with small implementations of just the parts Zucchini uses,
-plus the three build flag headers GN would generate. The shims are this repository's own code;
-nothing comes from Firefox's MPL-2.0 shims.
+plus the three build flag headers GN would generate. The shims are this repository's own code.
 
 `build.rs` compiles the `zucchini_lib` sources listed in Chromium's own `BUILD.gn`, so a new pin
 needs no source list edits. It also applies the exact text replacements in its `PATCHES` table to
@@ -81,7 +80,7 @@ Zucchini is compiled with `-O2` even in debug builds, because unoptimised genera
 - PE and ELF executables are recognised. DEX and ZTF are not enabled, as in Chrome's official
   Windows builds: their disassemblers are compiled but never registered, so patches containing
   them do not apply.
-- Patches are not compressed. In the jxsync benchmarks, xz compressed them best.
+- Patches are not compressed.
 - Zucchini's log output is off unless `set_log_level` turns it on.
 
 ## What diffs well
@@ -105,7 +104,7 @@ assemblies and ARM64 Windows binaries are misread as x86 and x64; compare them a
    `zucchini-sys/prebuilt.txt`.
 3. Commit `prebuilt.txt`. The `prebuilt` feature now accepts exactly those archives.
 
-Anyone can recheck an archive: `gh attestation verify zucchini-<target>.tar.gz --repo JinxxyVR/zucchini-rs`.
+Anyone can recheck an archive: `gh attestation verify zucchini-<target>.tar.gz --repo mriise/zucchini-rs`.
 
 Each archive holds `lib/` (`zucchini.lib` or `libzucchini.a`), `include/zucchini_c.h`, `LICENSE`,
 `LICENSE.chromium`, and `BUILD_INFO` (target, Chromium commit, compiler, MSVC CRT).
@@ -138,8 +137,6 @@ Verified:
   pinned local archive (a tampered archive is refused), and through `ZUCCHINI_SYS_LIB_DIR`.
 - Linux, LLVM 21.1.7 in Ubuntu 24.04 (libstdc++ 14) and 22.04 (libstdc++ 11) containers: every test
   passes, and Chromium's test pairs give the same patch sizes as on Windows.
-- An x64 DLL between two builds (152 to 153 MB): a 46.62 MB patch (53.97 MB raw),
-  the same as the Firefox-vendored Zucchini measured earlier, generated in 188 s.
 - `scripts/chromium.sh` from a fresh copy: 22 s.
 
 Not run yet: both GitHub workflows, `install-llvm.sh` on a Windows runner, macOS, the prebuilt

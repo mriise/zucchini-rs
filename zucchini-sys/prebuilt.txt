@@ -5,4 +5,4 @@
 # and rewrites this file. build.rs refuses any archive whose SHA-256 is not listed here.
 #
 # Format: one `release <url>` line, then sha256sum lines for the archives in that release.
-release https://github.com/JinxxyVR/zucchini-rs/releases/download/lib-v0.1.0
+release https://github.com/mriise/zucchini-rs/releases/download/lib-v0.1.0
