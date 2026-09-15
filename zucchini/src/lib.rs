@@ -82,6 +82,9 @@ pub enum Error {
     OutOfMemory,
     /// One of Chromium's internal consistency checks failed; the message names it.
     CheckFailed(String),
+    /// Zucchini gave up, or a C++ exception other than a failed check reached the API; the message
+    /// is the exception's, or empty.
+    Fatal(String),
     /// Any other Zucchini status code.
     Status(i32),
 }
@@ -100,6 +103,8 @@ impl fmt::Display for Error {
             }
             Error::OutOfMemory => f.write_str("out of memory"),
             Error::CheckFailed(message) => write!(f, "Zucchini internal check failed: {message}"),
+            Error::Fatal(message) if message.is_empty() => f.write_str("Zucchini failed"),
+            Error::Fatal(message) => write!(f, "Zucchini failed: {message}"),
             Error::Status(code) => write!(f, "Zucchini failed with status {code}"),
         }
     }
@@ -244,6 +249,7 @@ fn status(code: c_int) -> Result<(), Error> {
         sys::ZUCC_EMPTY_FILE => Err(Error::EmptyFile),
         sys::ZUCC_OUT_OF_MEMORY => Err(Error::OutOfMemory),
         sys::ZUCC_CHECK_FAILED => Err(Error::CheckFailed(last_error())),
+        sys::ZUCC_FATAL => Err(Error::Fatal(last_error())),
         other => Err(Error::Status(other)),
     }
 }
