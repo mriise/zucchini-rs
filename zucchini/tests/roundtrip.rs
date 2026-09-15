@@ -1,5 +1,6 @@
 use zucchini::{
-    Error, GenerateOptions, apply, apply_into, generate, generate_raw, generate_with, read_header,
+    Error, GenerateOptions, apply, apply_bounded, apply_into, generate, generate_raw, generate_with,
+    read_header,
 };
 
 /// Deterministic pseudo-random bytes, so failures reproduce.
@@ -121,6 +122,18 @@ fn apply_into_checks_the_buffer_size() {
     let mut exact = vec![0; new.len()];
     apply_into(&old, &patch, &mut exact).unwrap();
     assert_eq!(exact, new);
+}
+
+#[test]
+fn apply_bounded_caps_the_result_size() {
+    let old = noise(150_000, 11);
+    let new = edited(&old);
+    let patch = generate_raw(&old, &new).unwrap();
+    let new_size = read_header(&patch).unwrap().new_size as usize;
+    // A bound below the real result size is refused, before the result is allocated.
+    assert_eq!(apply_bounded(&old, &patch, new_size - 1), Err(Error::TooLarge));
+    // A bound at the result size behaves like `apply`.
+    assert_eq!(apply_bounded(&old, &patch, new_size).unwrap(), new);
 }
 
 #[test]

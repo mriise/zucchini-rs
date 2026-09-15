@@ -5,7 +5,7 @@ Chromium's binary diff for executables.
 
 | Crate | What it is |
 |---|---|
-| `zucchini` | Safe API: `generate`, `generate_raw`, `generate_with`, `apply`, `apply_into`, `read_header`, `set_log_level` |
+| `zucchini` | Safe API: `generate`, `generate_raw`, `generate_with`, `apply`, `apply_bounded`, `apply_into`, `read_header`, `set_log_level` |
 | `zucchini-sys` | Builds Zucchini into a static library and exposes the C API in `shim/zucchini_c.h` |
 
 ```rust

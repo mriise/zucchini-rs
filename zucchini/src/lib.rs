@@ -182,10 +182,23 @@ pub fn read_header(patch: &[u8]) -> Result<PatchHeader, Error> {
 /// the patch recorded.
 ///
 /// The result is allocated at the header's `new_size` before the old file's CRC-32 is checked, so a
-/// crafted patch can ask for up to [`MAX_LEN`] bytes. Bound [`PatchHeader::new_size`] first when
-/// the patch is untrusted.
+/// crafted patch can ask for up to [`MAX_LEN`] bytes. Use [`apply_bounded`] for untrusted patches
+/// to cap that allocation.
 pub fn apply(old: &[u8], patch: &[u8]) -> Result<Vec<u8>, Error> {
+    apply_bounded(old, patch, MAX_LEN)
+}
+
+/// Applies `patch` to `old` like [`apply`], but fails with [`Error::TooLarge`] before allocating
+/// when the header's [`PatchHeader::new_size`] exceeds `max_new`.
+///
+/// A patch names the size of its result in a header field an attacker controls independently of the
+/// old file, so [`apply`] can be made to allocate up to [`MAX_LEN`] bytes for a patch that later
+/// fails its CRC-32 check. Bounding `new_size` up front caps that work for untrusted patches.
+pub fn apply_bounded(old: &[u8], patch: &[u8], max_new: usize) -> Result<Vec<u8>, Error> {
     let header = read_header(patch)?;
+    if header.new_size as usize > max_new {
+        return Err(Error::TooLarge);
+    }
     if old.len() != header.old_size as usize {
         return Err(Error::WrongOldFile);
     }
