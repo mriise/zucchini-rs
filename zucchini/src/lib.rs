@@ -38,7 +38,8 @@ pub struct GenerateOptions {
     /// archive, so the executables inside it are found instead.
     pub start_scan_at: u32,
     /// Element matches that replace Zucchini's own, written `old_offset+old_size=new_offset+new_size`
-    /// and separated by commas.
+    /// and separated by commas. A non-empty string takes precedence over `raw`. Zucchini does not
+    /// report a malformed string: it logs an error and makes a raw patch instead.
     pub imposed_matches: Option<String>,
 }
 
@@ -73,7 +74,7 @@ pub enum Error {
     TooLarge,
     /// Zucchini cannot patch from or to an empty file; send the new file whole instead.
     EmptyFile,
-    /// Zucchini rejected an argument, for example malformed imposed matches.
+    /// An argument could not be passed to Zucchini, such as imposed matches containing a NUL byte.
     InvalidArgument,
     /// The buffer given to [`apply_into`] is not the size the patch produces.
     BufferSize { expected: usize, actual: usize },
