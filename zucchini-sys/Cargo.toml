@@ -4,6 +4,7 @@ description = "Builds Chromium's Zucchini binary diff and exposes its C API"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 rust-version.workspace = true
 links = "zucchini"
 publish = false
