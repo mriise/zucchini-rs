@@ -81,11 +81,28 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::mem::size_of;
+    use core::mem::{offset_of, size_of};
 
     #[test]
     fn struct_layouts_match_the_c_header() {
         assert_eq!(size_of::<zucc_patch_header>(), 20);
         assert_eq!(size_of::<zucc_generate_options>(), 8 + size_of::<*const c_char>());
+    }
+
+    #[test]
+    fn patch_header_field_offsets_match_the_c_header() {
+        assert_eq!(offset_of!(zucc_patch_header, major_version), 0);
+        assert_eq!(offset_of!(zucc_patch_header, minor_version), 2);
+        assert_eq!(offset_of!(zucc_patch_header, old_size), 4);
+        assert_eq!(offset_of!(zucc_patch_header, old_crc), 8);
+        assert_eq!(offset_of!(zucc_patch_header, new_size), 12);
+        assert_eq!(offset_of!(zucc_patch_header, new_crc), 16);
+    }
+
+    #[test]
+    fn generate_options_field_offsets_match_the_c_header() {
+        assert_eq!(offset_of!(zucc_generate_options, start_scan_at), 0);
+        assert_eq!(offset_of!(zucc_generate_options, raw), 4);
+        assert_eq!(offset_of!(zucc_generate_options, imposed_matches), 8);
     }
 }
