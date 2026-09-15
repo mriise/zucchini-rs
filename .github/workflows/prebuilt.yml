@@ -37,8 +37,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      EXPORT: ${{ runner.temp }}/zucchini-${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,13 +53,13 @@ jobs:
 
       - name: Build
         env:
-          ZUCCHINI_SYS_EXPORT_DIR: ${{ env.EXPORT }}
+          ZUCCHINI_SYS_EXPORT_DIR: ${{ runner.temp }}/zucchini-${{ matrix.target }}
         run: cargo build --locked --release -p zucchini-sys --target ${{ matrix.target }}
 
       - name: Test against the exported library
         if: matrix.test
         env:
-          ZUCCHINI_SYS_LIB_DIR: ${{ env.EXPORT }}/lib
+          ZUCCHINI_SYS_LIB_DIR: ${{ runner.temp }}/zucchini-${{ matrix.target }}/lib
         run: cargo test --locked --release --workspace --target ${{ matrix.target }}
 
       - name: Package
