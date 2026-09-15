@@ -46,11 +46,13 @@ mkdir -p "$1"
 dest=$(cd "$1" && pwd)
 
 if [ ! -e "$dest/.installed-$version" ]; then
-  curl -fsSL --retry 3 -o "$dest/$archive" \
+  echo "downloading $archive"
+  curl -fL --retry 3 -o "$dest/$archive" \
     "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$archive"
   (cd "$dest" && echo "$sha256  $archive" | sha256sum -c -)
+  echo "extracting the compiler; xz reads the whole archive to find it"
   # shellcheck disable=SC2086 # the member patterns are meant to split
-  (cd "$dest" && tar -xJf "$archive" --strip-components=1 --wildcards $members)
+  (cd "$dest" && tar -xvJf "$archive" --strip-components=1 --wildcards $members)
   rm "$dest/$archive"
   touch "$dest/.installed-$version"
 fi
