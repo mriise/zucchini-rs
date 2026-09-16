@@ -12,6 +12,17 @@
 //! ZTF (a test format) support is not enabled: their disassemblers are compiled but never
 //! registered, so a patch Chromium's own tools made with those elements does not apply here.
 //!
+//! A failed Chromium CHECK returns [`Error::CheckFailed`] instead of crashing the process, and
+//! [`apply`] checks the CRC-32 of both the old file and the result. Files are limited to 4 GiB,
+//! because the patch header stores 32-bit sizes. Logging stays off until [`set_log_level`] turns
+//! it on.
+//!
+//! Gains are largest between builds of the same PE (x86, x64) or little-endian ELF (x86, x86-64,
+//! ARM, AArch64) program, even one stored uncompressed inside a larger file. Mach-O, object
+//! files, static libraries and packed or compressed binaries diff as raw bytes; .NET IL
+//! assemblies and ARM64 Windows binaries are misread as x86 and x64, so compare those against
+//! [`generate_raw`].
+//!
 //! ```no_run
 //! let old = std::fs::read("app-1.0.exe")?;
 //! let new = std::fs::read("app-1.1.exe")?;
