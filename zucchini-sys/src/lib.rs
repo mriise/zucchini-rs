@@ -1,6 +1,10 @@
 //! Raw bindings to the C API in `shim/zucchini_c.h`, over Chromium's Zucchini binary diff.
 //!
 //! Use the `zucchini` crate for a safe interface.
+//!
+//! `build.rs` compiles Chromium's Zucchini into a static library with clang, or links the
+//! prebuilt archive pinned in `prebuilt.txt` when the `prebuilt` feature is on. The
+//! repository's `docs/building.md` lists the environment variables that steer it.
 
 #![no_std]
 #![allow(non_camel_case_types)]
