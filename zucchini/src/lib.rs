@@ -161,7 +161,7 @@ pub fn generate_raw(old: &[u8], new: &[u8]) -> Result<Vec<u8>, Error> {
 
 /// Makes a patch from `old` to `new` with explicit options.
 pub fn generate_with(old: &[u8], new: &[u8], options: &GenerateOptions) -> Result<Vec<u8>, Error> {
-    #[cfg(feature = "crc32-hook")]
+    #[cfg(feature = "crc-fast")]
     crc32::install_default();
     check_len(old)?;
     check_len(new)?;
@@ -239,7 +239,7 @@ pub fn apply_bounded(old: &[u8], patch: &[u8], max_new: usize) -> Result<Vec<u8>
 /// Applies `patch` to `old`, writing the new file into `new`, which must be exactly the patch's
 /// [`PatchHeader::new_size`].
 pub fn apply_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> Result<(), Error> {
-    #[cfg(feature = "crc32-hook")]
+    #[cfg(feature = "crc-fast")]
     crc32::install_default();
     // SAFETY: `old` and `patch` are readable and `new` writable for their lengths.
     let code = unsafe {

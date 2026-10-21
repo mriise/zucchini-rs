@@ -2,7 +2,6 @@
 //! feature).
 
 use std::ptr;
-use std::sync::Once;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use zucchini_sys as sys;
@@ -16,6 +15,7 @@ use zucchini_sys as sys;
 /// fail with [`Error::WrongOldFile`](crate::Error::WrongOldFile). A panic inside it aborts the
 /// process, since it is called from C++.
 pub fn set_crc32(crc32: Option<fn(&[u8]) -> u32>) {
+    #[cfg(feature = "crc-fast")]
     install_default();
     match crc32 {
         Some(crc32) => {
@@ -28,9 +28,12 @@ pub fn set_crc32(crc32: Option<fn(&[u8]) -> u32>) {
     }
 }
 
-/// Installs the default CRC-32 the first time a patch is generated or applied, unless
-/// [`set_crc32`] chose one first.
+/// Installs crc-fast the first time a patch is generated or applied, unless [`set_crc32`] chose a
+/// CRC-32 first. Without crc-fast there is nothing to install: Chromium's loop is the default.
+#[cfg(feature = "crc-fast")]
 pub(crate) fn install_default() {
+    use std::sync::Once;
+
     static DEFAULT: Once = Once::new();
     DEFAULT.call_once(set_default);
 }
