@@ -28,12 +28,23 @@ const LIB: &str = "zucchini";
 /// pinned sources build with the standard libraries this crate supports. Each `from` must occur
 /// exactly once: when a new pin changes the text, the build stops and says so.
 const PATCHES: &[(&str, &str, &str)] = &[(
-    // libstdc++ before GCC 15 lacks std::vector's C++23 from_range constructor. The line sits in an
-    // `if consteval` branch, and the iterator pair constructor copies the same elements.
+    // libstdc++ before GCC 15 lacks std::vector's C++23 from_range constructor. The line sits in
+    // an `if consteval` branch, and the iterator pair constructor copies the same elements.
     "base/containers/span.h",
     "std::vector(std::from_range, src)",
     "std::vector<T>(src.begin(), src.end())",
 )];
+
+/// Zucchini keeps reference locations, targets and equivalences in std::deque, which build.rs
+/// replaces with std::vector in every Zucchini file. Chromium builds against libc++, whose deque
+/// blocks hold 4 KiB; MSVC's hold 16 bytes, so sorting and searching millions of offsets pays for an
+/// allocation and an indirection every few of them, and applying a patch to a large executable
+/// takes about a third longer. A vector costs some peak memory while it grows.
+const DEQUE: (&str, &str) = ("std::deque", "std::vector");
+
+/// Calls a deque does cheaply and a vector does not. Zucchini makes none of them, and build.rs stops
+/// if a new pin starts to.
+const FRONT_CALLS: &[&str] = &["push_front", "pop_front", "emplace_front"];
 
 fn main() {
     let target = env::var("TARGET").unwrap();
@@ -97,7 +108,15 @@ fn build_from_source(manifest: &Path, out: &Path, target: &str) {
     }
 
     let patched = out.join("chromium-patched");
-    write_patched_files(&chromium, &patched);
+    let patched_files = write_patched_files(&chromium, &patched);
+    // A patched source is compiled from its copy; a patched header is found there first.
+    let sources: Vec<PathBuf> = sources
+        .iter()
+        .map(|source| {
+            let file = format!("components/zucchini/{source}");
+            if patched_files.contains(&file) { patched.join(file) } else { component.join(source) }
+        })
+        .collect();
 
     let msvc = target.contains("msvc");
     let mut build = cc::Build::new();
@@ -115,7 +134,7 @@ fn build_from_source(manifest: &Path, out: &Path, target: &str) {
         .include(&chromium)
         .include(chromium.join("base/allocator/partition_allocator/src"))
         .file(shim.join("zucchini_c.cc"))
-        .files(sources.iter().map(|source| component.join(source)));
+        .files(&sources);
     if msvc {
         // A failed CHECK throws to the C API boundary (shim/base/check.h), so exceptions stay on.
         build.flag("/EHsc");
@@ -137,13 +156,19 @@ fn build_from_source(manifest: &Path, out: &Path, target: &str) {
     }
 }
 
-/// Writes the files PATCHES changes into `dir`, which the compiler searches before `chromium`.
-fn write_patched_files(chromium: &Path, dir: &Path) {
+/// Writes the files PATCHES and DEQUE change into `dir`, which the compiler searches before
+/// `chromium`, and returns their paths relative to `chromium`.
+fn write_patched_files(chromium: &Path, dir: &Path) -> Vec<String> {
     let _ = fs::remove_dir_all(dir);
-    for (file, from, to) in PATCHES {
+    let read = |file: &str| {
         let source = chromium.join(file);
-        let text = fs::read_to_string(&source)
-            .unwrap_or_else(|error| fail(&format!("cannot read {}: {error}", source.display())));
+        fs::read_to_string(&source)
+            .unwrap_or_else(|error| fail(&format!("cannot read {}: {error}", source.display())))
+    };
+    let mut files: Vec<(String, String)> = Vec::new();
+
+    for (file, from, to) in PATCHES {
+        let text = read(file);
         let found = text.matches(from).count();
         if found != 1 {
             fail(&format!(
@@ -151,10 +176,51 @@ fn write_patched_files(chromium: &Path, dir: &Path) {
                  The Chromium pin has moved past this fix: update PATCHES in build.rs."
             ));
         }
-        let patched = dir.join(file);
-        fs::create_dir_all(patched.parent().unwrap()).unwrap();
-        fs::write(&patched, text.replace(from, to)).unwrap();
+        files.push((file.to_string(), text.replace(from, to)));
     }
+
+    let (deque, vector) = DEQUE;
+    for file in zucchini_code(chromium) {
+        let text = match files.iter().position(|(patched, _)| *patched == file) {
+            Some(i) => files.remove(i).1,
+            None => read(&file),
+        };
+        if let Some(call) = FRONT_CALLS.iter().find(|call| text.contains(*call)) {
+            fail(&format!(
+                "{file} calls {call}, which build.rs's swap of std::deque for std::vector makes slow\n  \
+                 Drop the DEQUE swap in build.rs, or keep std::deque for that container."
+            ));
+        }
+        let text = if text.contains(deque) { text.replace(deque, vector) } else { text };
+        files.push((file, text));
+    }
+
+    let mut written = Vec::new();
+    for (file, text) in files {
+        if text == read(&file) {
+            continue;
+        }
+        let patched = dir.join(&file);
+        fs::create_dir_all(patched.parent().unwrap()).unwrap();
+        fs::write(&patched, text).unwrap();
+        written.push(file);
+    }
+    written
+}
+
+/// Zucchini's own headers and sources, without tests and fuzzers, relative to `chromium`.
+fn zucchini_code(chromium: &Path) -> Vec<String> {
+    let component = chromium.join("components/zucchini");
+    let entries = fs::read_dir(&component)
+        .unwrap_or_else(|error| fail(&format!("cannot list {}: {error}", component.display())));
+    let mut files: Vec<String> = entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".h") || name.ends_with(".cc"))
+        .filter(|name| !name.contains("unittest") && !name.contains("fuzzer") && !name.contains("test_"))
+        .map(|name| format!("components/zucchini/{name}"))
+        .collect();
+    files.sort();
+    files
 }
 
 /// The `.cc` files a static_library lists in BUILD.gn. Reading Chromium's own list keeps the build

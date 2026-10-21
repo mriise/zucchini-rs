@@ -16,8 +16,15 @@ StringPrintf, a few string helpers) would bring 190 more headers and compiled `/
 plus the three build flag headers GN would generate. The shims are this repository's own code.
 
 `build.rs` compiles the `zucchini_lib` sources listed in Chromium's own `BUILD.gn`, so a new pin
-needs no source list edits. It also applies the exact text replacements in its `PATCHES` table to
-copies of Chromium files; today that is one line of `base/containers/span.h` that needs libstdc++ 15.
+needs no source list edits. It also changes copies of Chromium files, which the compiler finds
+before the originals:
+
+- the exact text replacements in its `PATCHES` table; today that is one line of
+  `base/containers/span.h` that needs libstdc++ 15;
+- `std::deque` becomes `std::vector` in every Zucchini file. MSVC's deque stores 16 bytes per
+  block (libc++, which Chromium builds with, stores 4 KiB), and Zucchini sorts and searches millions
+  of offsets in them: applying a patch to a 177 MB PE took 4.75 s with deques and 3.65 s with
+  vectors. Patches and results are byte-identical either way.
 
 ## Moving the pin
 
@@ -29,4 +36,5 @@ cargo test --workspace
 The script fetches and pins the new commit; commit the submodule change with it. If Chromium added a
 `//base` dependency, the compiler names the missing header: add it to `chromium-files.txt` when it
 is header-only and needs nothing new, otherwise write a shim. If a `PATCHES` entry no longer
-matches, `build.rs` stops and names it.
+matches, or Zucchini starts adding or removing at the front of a container (which a vector does
+slowly), `build.rs` stops and names it.
