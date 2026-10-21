@@ -2,6 +2,7 @@
 
 #include "zucchini_c.h"
 
+#include <atomic>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -12,6 +13,7 @@
 
 #include "base/logging.h"
 #include "components/zucchini/buffer_view.h"
+#include "components/zucchini/crc32.h"
 #include "components/zucchini/patch_reader.h"
 #include "components/zucchini/patch_writer.h"
 #include "components/zucchini/zucchini.h"
@@ -28,6 +30,8 @@ struct zucc_patch {
 namespace {
 
 thread_local std::string g_last_error;
+
+std::atomic<zucc_crc32_fn> g_crc32{nullptr};
 
 bool TooLarge(size_t size) {
   return size > std::numeric_limits<uint32_t>::max();
@@ -57,6 +61,18 @@ zucchini::ConstBufferView View(const uint8_t* data, size_t size) {
 }
 
 }  // namespace
+
+namespace zucchini {
+
+// crc32.cc's own CalculateCrc32, renamed by build.rs's PATCHES.
+uint32_t CalculateCrc32Builtin(const uint8_t* first, const uint8_t* last);
+
+uint32_t CalculateCrc32(const uint8_t* first, const uint8_t* last) {
+  zucc_crc32_fn crc32 = g_crc32.load(std::memory_order_acquire);
+  return crc32 ? crc32(first, static_cast<size_t>(last - first)) : CalculateCrc32Builtin(first, last);
+}
+
+}  // namespace zucchini
 
 extern "C" {
 
@@ -189,6 +205,10 @@ void zucc_set_log_level(int level) {
       break;
   }
   logging::internal::g_min_severity.store(min_severity, std::memory_order_relaxed);
+}
+
+void zucc_set_crc32(zucc_crc32_fn fn) {
+  g_crc32.store(fn, std::memory_order_release);
 }
 
 }  // extern "C"

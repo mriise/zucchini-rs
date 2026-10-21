@@ -57,6 +57,9 @@ pub struct zucc_patch_header {
     pub new_crc: u32,
 }
 
+/// The CRC-32 of `len` bytes at `data`, as zlib's `crc32` computes it (CRC-32/ISO-HDLC).
+pub type zucc_crc32_fn = unsafe extern "C" fn(data: *const u8, len: usize) -> u32;
+
 unsafe extern "C" {
     pub fn zucc_generate(
         old_data: *const u8,
@@ -80,6 +83,9 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn zucc_last_error() -> *const c_char;
     pub fn zucc_set_log_level(level: c_int);
+    /// Replaces the whole-file CRC-32 for the process; `None` restores the built-in table loop.
+    /// The function must match zlib's `crc32` and be safe to call from several threads at once.
+    pub fn zucc_set_crc32(crc32: Option<zucc_crc32_fn>);
 }
 
 #[cfg(test)]

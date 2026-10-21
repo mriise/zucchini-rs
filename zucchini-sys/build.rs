@@ -27,13 +27,22 @@ const LIB: &str = "zucchini";
 /// Exact text replacements build.rs applies to copies of Chromium files, as (file, from, to), so the
 /// pinned sources build with the standard libraries this crate supports. Each `from` must occur
 /// exactly once: when a new pin changes the text, the build stops and says so.
-const PATCHES: &[(&str, &str, &str)] = &[(
-    // libstdc++ before GCC 15 lacks std::vector's C++23 from_range constructor. The line sits in
-    // an `if consteval` branch, and the iterator pair constructor copies the same elements.
-    "base/containers/span.h",
-    "std::vector(std::from_range, src)",
-    "std::vector<T>(src.begin(), src.end())",
-)];
+const PATCHES: &[(&str, &str, &str)] = &[
+    (
+        // libstdc++ before GCC 15 lacks std::vector's C++23 from_range constructor. The line sits in
+        // an `if consteval` branch, and the iterator pair constructor copies the same elements.
+        "base/containers/span.h",
+        "std::vector(std::from_range, src)",
+        "std::vector<T>(src.begin(), src.end())",
+    ),
+    (
+        // The C API defines CalculateCrc32 (shim/zucchini_c.cc): it calls the function
+        // zucc_set_crc32 chose, or this byte-at-a-time table loop when none was.
+        "components/zucchini/crc32.cc",
+        "uint32_t CalculateCrc32(const uint8_t* first, const uint8_t* last) {",
+        "uint32_t CalculateCrc32Builtin(const uint8_t* first, const uint8_t* last) {",
+    ),
+];
 
 /// Zucchini keeps reference locations, targets and equivalences in std::deque, which build.rs
 /// replaces with std::vector in every Zucchini file. Chromium builds against libc++, whose deque
