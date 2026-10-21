@@ -19,9 +19,13 @@ plus the three build flag headers GN would generate. The shims are this reposito
 needs no source list edits. It also changes copies of Chromium files, which the compiler finds
 before the originals:
 
-- the exact text replacements in its `PATCHES` table: one line of `base/containers/span.h` that
-  needs libstdc++ 15, and a rename of `CalculateCrc32` in `crc32.cc`, so the C API's own
-  `CalculateCrc32` can call the function `zucc_set_crc32` chose and fall back to Chromium's;
+- the exact text replacements in its `PATCHES` table:
+  - one line of `base/containers/span.h` that needs libstdc++ 15;
+  - a rename of `CalculateCrc32` in `crc32.cc`, so the C API's own `CalculateCrc32` can call the
+    function `zucc_set_crc32` chose and fall back to Chromium's;
+  - `SortAndUniquify` and `TargetPool::FilterAndProject` sort through `zucchini_rs::Sort`
+    (`shim/zucchini_rs/sort.h`), which radix sorts vectors of 32-bit offsets: the same order, and
+    about 0.25 s less of a 177 MB PE's apply;
 - `std::deque` becomes `std::vector` in every Zucchini file. MSVC's deque stores 16 bytes per
   block (libc++, which Chromium builds with, stores 4 KiB), and Zucchini sorts and searches millions
   of offsets in them: applying a patch to a 177 MB PE took 4.75 s with deques and 3.65 s with

@@ -42,6 +42,23 @@ const PATCHES: &[(&str, &str, &str)] = &[
         "uint32_t CalculateCrc32(const uint8_t* first, const uint8_t* last) {",
         "uint32_t CalculateCrc32Builtin(const uint8_t* first, const uint8_t* last) {",
     ),
+    (
+        // zucchini_rs::Sort (shim/zucchini_rs/sort.h) radix sorts offset vectors: the same order,
+        // in about a quarter of the time for the millions of targets a large executable has.
+        "components/zucchini/algorithm.h",
+        "#include \"base/check_op.h\"",
+        "#include \"base/check_op.h\"\n#include \"zucchini_rs/sort.h\"",
+    ),
+    (
+        "components/zucchini/algorithm.h",
+        "  std::sort(container->begin(), container->end());\n  container->erase(",
+        "  zucchini_rs::Sort(container);\n  container->erase(",
+    ),
+    (
+        "components/zucchini/target_pool.cc",
+        "  std::sort(targets_.begin(), targets_.end());",
+        "  zucchini_rs::Sort(&targets_);",
+    ),
 ];
 
 /// Zucchini keeps reference locations, targets and equivalences in std::deque, which build.rs
@@ -177,7 +194,11 @@ fn write_patched_files(chromium: &Path, dir: &Path) -> Vec<String> {
     let mut files: Vec<(String, String)> = Vec::new();
 
     for (file, from, to) in PATCHES {
-        let text = read(file);
+        // Entries for the same file apply one after another.
+        let text = match files.iter().position(|(patched, _)| patched == file) {
+            Some(i) => files.remove(i).1,
+            None => read(file),
+        };
         let found = text.matches(from).count();
         if found != 1 {
             fail(&format!(
