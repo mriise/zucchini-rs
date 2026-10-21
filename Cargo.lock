@@ -588,7 +588,7 @@ checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zucchini"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crc-fast",
  "zucchini-sys",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "zucchini-sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cc",
  "diffy",

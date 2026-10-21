@@ -4,7 +4,7 @@ members = ["zucchini", "zucchini-sys"]
 
 [workspace.package]
 authors = ["mriise <me@mriise.net>"]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "BSD-3-Clause"
 repository = "https://github.com/mriise/zucchini-rs"
@@ -13,4 +13,4 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # zucchini is published against exactly its own version of zucchini-sys; bump both together.
-zucchini-sys = { path = "zucchini-sys", version = "=0.1.0" }
+zucchini-sys = { path = "zucchini-sys", version = "=0.1.1" }
