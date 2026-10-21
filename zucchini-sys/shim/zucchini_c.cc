@@ -7,6 +7,7 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <string>
@@ -33,6 +34,9 @@ thread_local std::string g_last_error;
 
 #ifdef ZUCCHINI_RS_CRC32_HOOK
 std::atomic<zucc_crc32_fn> g_crc32{nullptr};
+// Held while writing g_crc32, so zucc_set_default_crc32 never replaces what zucc_set_crc32 chose.
+std::mutex g_crc32_mutex;
+bool g_crc32_chosen = false;
 #endif
 
 bool TooLarge(size_t size) {
@@ -213,7 +217,16 @@ void zucc_set_log_level(int level) {
 
 #ifdef ZUCCHINI_RS_CRC32_HOOK
 void zucc_set_crc32(zucc_crc32_fn fn) {
+  std::lock_guard<std::mutex> lock(g_crc32_mutex);
+  g_crc32_chosen = true;
   g_crc32.store(fn, std::memory_order_release);
+}
+
+void zucc_set_default_crc32(zucc_crc32_fn fn) {
+  std::lock_guard<std::mutex> lock(g_crc32_mutex);
+  if (!g_crc32_chosen) {
+    g_crc32.store(fn, std::memory_order_release);
+  }
 }
 #endif
 

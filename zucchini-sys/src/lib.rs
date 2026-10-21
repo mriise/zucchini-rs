@@ -88,6 +88,9 @@ unsafe extern "C" {
     /// Only in a library built with the `crc32-hook` feature.
     #[cfg(feature = "crc32-hook")]
     pub fn zucc_set_crc32(crc32: Option<zucc_crc32_fn>);
+    /// Installs `crc32` as `zucc_set_crc32` would, unless `zucc_set_crc32` has already been called.
+    #[cfg(feature = "crc32-hook")]
+    pub fn zucc_set_default_crc32(crc32: Option<zucc_crc32_fn>);
 }
 
 #[cfg(test)]

@@ -95,6 +95,10 @@ typedef uint32_t (*zucc_crc32_fn)(const uint8_t* data, size_t len);
  * crc32-hook feature (ZUCCHINI_RS_CRC32_HOOK defined); prebuilt libraries do not have it. */
 void zucc_set_crc32(zucc_crc32_fn fn);
 
+/* Installs fn as zucc_set_crc32 would, unless zucc_set_crc32 has already been called. Same
+ * requirements, and only in the same libraries. */
+void zucc_set_default_crc32(zucc_crc32_fn fn);
+
 #ifdef __cplusplus
 }
 #endif
