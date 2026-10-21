@@ -27,3 +27,9 @@ release. Set `CXX` to use another compiler.
 | `ZUCCHINI_SYS_EXPORT_DIR=<dir>` | Also write what a prebuilt archive holds to `<dir>` |
 
 Zucchini is compiled with `-O2` even in debug builds, because unoptimised generation is very slow.
+
+By default the CRC-32 that generating and applying take over both whole files is Chromium's own
+loop, which reads a byte at a time: about 0.3 s for each file of a 177 MB executable's patch. The
+`zucchini` crate's optional `crc-fast` feature computes the same values with the crc-fast crate's
+SIMD code instead (about 7 ms for that file), through the C API's `zucc_set_crc32`;
+`zucchini::set_crc32` picks any other implementation.

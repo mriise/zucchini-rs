@@ -13,7 +13,9 @@
 //! registered, so a patch Chromium's own tools made with those elements does not apply here.
 //!
 //! A failed Chromium CHECK returns [`Error::CheckFailed`] instead of crashing the process, and
-//! [`apply`] checks the CRC-32 of both the old file and the result. Files are limited to 4 GiB,
+//! [`apply`] checks the CRC-32 of both the old file and the result. With the optional `crc-fast`
+//! feature that CRC-32 runs on crc-fast's SIMD code rather than Chromium's byte-at-a-time loop;
+//! [`set_crc32`] picks another implementation. Files are limited to 4 GiB,
 //! because the patch header stores 32-bit sizes. Logging stays off until [`set_log_level`] turns
 //! it on.
 //!
@@ -34,6 +36,8 @@
 use std::ffi::{CStr, CString, c_int};
 use std::fmt;
 use std::ptr;
+use std::sync::Once;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use zucchini_sys as sys;
 
@@ -145,6 +149,7 @@ pub fn generate_raw(old: &[u8], new: &[u8]) -> Result<Vec<u8>, Error> {
 
 /// Makes a patch from `old` to `new` with explicit options.
 pub fn generate_with(old: &[u8], new: &[u8], options: &GenerateOptions) -> Result<Vec<u8>, Error> {
+    default_crc32();
     check_len(old)?;
     check_len(new)?;
     let imposed = options
@@ -221,6 +226,7 @@ pub fn apply_bounded(old: &[u8], patch: &[u8], max_new: usize) -> Result<Vec<u8>
 /// Applies `patch` to `old`, writing the new file into `new`, which must be exactly the patch's
 /// [`PatchHeader::new_size`].
 pub fn apply_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> Result<(), Error> {
+    default_crc32();
     // SAFETY: `old` and `patch` are readable and `new` writable for their lengths.
     let code = unsafe {
         sys::zucc_apply(old.as_ptr(), old.len(), patch.as_ptr(), patch.len(), new.as_mut_ptr(), new.len())
@@ -242,6 +248,69 @@ pub fn set_log_level(level: LogLevel) {
     };
     // SAFETY: accepts any value and only stores it.
     unsafe { sys::zucc_set_log_level(level) }
+}
+
+/// Chooses the CRC-32 Zucchini computes over both whole files when it generates or applies a patch.
+/// `None` goes back to the default: crc-fast with the `crc-fast` feature, otherwise Chromium's
+/// byte-at-a-time loop.
+///
+/// The choice applies to the whole process, including calls already running on other threads, so
+/// `crc32` must return what zlib's `crc32` does (CRC-32/ISO-HDLC); anything else makes every apply
+/// fail with [`Error::WrongOldFile`]. A panic inside it aborts the process, since it is called
+/// from C++.
+pub fn set_crc32(crc32: Option<fn(&[u8]) -> u32>) {
+    default_crc32();
+    match crc32 {
+        Some(crc32) => {
+            CRC32.store(crc32 as *mut (), Ordering::Release);
+            // SAFETY: crc32_from_c is thread safe and computes the CRC-32 with the function just
+            // stored, which the caller vouches for.
+            unsafe { sys::zucc_set_crc32(Some(crc32_from_c)) }
+        }
+        None => install_default_crc32(),
+    }
+}
+
+/// The function crc32_from_c calls, a `fn(&[u8]) -> u32`; null until one is installed.
+static CRC32: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+
+/// Installs the default CRC-32 the first time a patch is generated or applied, unless
+/// [`set_crc32`] chose one first.
+fn default_crc32() {
+    static DEFAULT: Once = Once::new();
+    DEFAULT.call_once(install_default_crc32);
+}
+
+#[cfg(feature = "crc-fast")]
+fn install_default_crc32() {
+    CRC32.store(crc32_fast as fn(&[u8]) -> u32 as *mut (), Ordering::Release);
+    // SAFETY: crc32_from_c is thread safe, and crc-fast's CRC-32/ISO-HDLC is zlib's CRC-32.
+    unsafe { sys::zucc_set_crc32(Some(crc32_from_c)) }
+}
+
+#[cfg(not(feature = "crc-fast"))]
+fn install_default_crc32() {
+    // SAFETY: None restores Chromium's own loop.
+    unsafe { sys::zucc_set_crc32(None) }
+}
+
+#[cfg(feature = "crc-fast")]
+fn crc32_fast(data: &[u8]) -> u32 {
+    crc_fast::checksum(crc_fast::CrcAlgorithm::Crc32IsoHdlc, data) as u32
+}
+
+/// What zucc_set_crc32 is given: calls the function in CRC32, which is always stored before this is
+/// installed and never cleared.
+unsafe extern "C" fn crc32_from_c(data: *const u8, len: usize) -> u32 {
+    let data = if len == 0 {
+        &[][..]
+    } else {
+        // SAFETY: Zucchini passes a file it holds, readable for `len` bytes.
+        unsafe { std::slice::from_raw_parts(data, len) }
+    };
+    // SAFETY: CRC32 only ever holds a `fn(&[u8]) -> u32`, and holds one whenever this runs.
+    let crc32 = unsafe { std::mem::transmute::<*mut (), fn(&[u8]) -> u32>(CRC32.load(Ordering::Acquire)) };
+    crc32(data)
 }
 
 /// Owns a generated patch until it has been written out.
