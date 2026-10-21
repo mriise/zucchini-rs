@@ -22,18 +22,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use diffy::patch_set::{FileOperation, ParseOptions, PatchSet};
+use diffy::{Line, Patch};
+
 const LIB: &str = "zucchini";
 
-/// Exact text replacements build.rs applies to copies of Chromium files, as (file, from, to), so the
-/// pinned sources build with the standard libraries this crate supports. Each `from` must occur
-/// exactly once: when a new pin changes the text, the build stops and says so.
-const PATCHES: &[(&str, &str, &str)] = &[(
-    // libstdc++ before GCC 15 lacks std::vector's C++23 from_range constructor. The line sits in an
-    // `if consteval` branch, and the iterator pair constructor copies the same elements.
-    "base/containers/span.h",
-    "std::vector(std::from_range, src)",
-    "std::vector<T>(src.begin(), src.end())",
-)];
+/// Unified diffs in `patches/` that build.rs applies, in this order, to copies of Chromium files,
+/// with the Cargo feature that turns each on. Each file's header says what it changes and why.
+/// Only the libstdc++ fix applies by default; the others change Zucchini's code for speed, and
+/// patches and results stay byte-identical with or without them.
+const PATCHES: &[(&str, Option<&str>)] = &[
+    ("libstdcxx-span.patch", None),
+    ("vector-containers.patch", Some("vector-containers")),
+    // Written against the vector-containers result; the feature turns that one on too.
+    ("radix-sort.patch", Some("radix-sort")),
+    ("crc32-hook.patch", Some("crc32-hook")),
+];
 
 fn main() {
     let target = env::var("TARGET").unwrap();
@@ -69,6 +73,17 @@ fn main() {
 
     #[cfg(feature = "prebuilt")]
     if !env_flag("ZUCCHINI_SYS_FROM_SOURCE") {
+        // Prebuilt archives are built without the optional patches: linking one would quietly drop
+        // a speed-up, or fail to link zucc_set_crc32.
+        let features: Vec<&str> = enabled_patches().into_iter().filter_map(|(_, feature)| feature).collect();
+        if !features.is_empty() {
+            let features = features.join("`, `");
+            fail(&format!(
+                "the `{features}` features change Zucchini's sources, but prebuilt libraries are \
+                 built without them\n  Build from source instead: set ZUCCHINI_SYS_FROM_SOURCE=1, or \
+                 drop those features or `prebuilt`."
+            ));
+        }
         let dir = prebuilt::fetch(&manifest, &out, &target);
         link(&dir.join("lib"), &target);
         return;
@@ -97,7 +112,16 @@ fn build_from_source(manifest: &Path, out: &Path, target: &str) {
     }
 
     let patched = out.join("chromium-patched");
-    write_patched_files(&chromium, &patched);
+    let patches = enabled_patches();
+    let patched_files = write_patched_files(&manifest.join("patches"), &patches, &chromium, &patched);
+    // A patched source is compiled from its copy; a patched header is found there first.
+    let sources: Vec<PathBuf> = sources
+        .iter()
+        .map(|source| {
+            let file = format!("components/zucchini/{source}");
+            if patched_files.contains(&file) { patched.join(file) } else { component.join(source) }
+        })
+        .collect();
 
     let msvc = target.contains("msvc");
     let mut build = cc::Build::new();
@@ -115,7 +139,7 @@ fn build_from_source(manifest: &Path, out: &Path, target: &str) {
         .include(&chromium)
         .include(chromium.join("base/allocator/partition_allocator/src"))
         .file(shim.join("zucchini_c.cc"))
-        .files(sources.iter().map(|source| component.join(source)));
+        .files(&sources);
     if msvc {
         // A failed CHECK throws to the C API boundary (shim/base/check.h), so exceptions stay on.
         build.flag("/EHsc");
@@ -123,38 +147,120 @@ fn build_from_source(manifest: &Path, out: &Path, target: &str) {
     if !env_flag("ZUCCHINI_SYS_DCHECK") {
         build.define("NDEBUG", None);
     }
+    if patches.iter().any(|(_, feature)| *feature == Some("crc32-hook")) {
+        // shim/zucchini_c.cc then defines zucc_set_crc32 and the CalculateCrc32 that calls it.
+        build.define("ZUCCHINI_RS_CRC32_HOOK", None);
+    }
     if !cxx_vars(target).iter().any(|var| env::var_os(var).is_some()) {
         build.compiler(if msvc { "clang-cl" } else { "clang++" });
     }
     build.compile(LIB);
 
-    for path in [shim, component, chromium.join("base"), chromium.join("build")] {
+    for path in [shim, manifest.join("patches"), component, chromium.join("base"), chromium.join("build")] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
 
     if let Some(dir) = env::var_os("ZUCCHINI_SYS_EXPORT_DIR") {
-        export(Path::new(&dir), manifest, &chromium, out, target, &build);
+        export(Path::new(&dir), manifest, &chromium, out, target, &build, &patches);
     }
 }
 
-/// Writes the files PATCHES changes into `dir`, which the compiler searches before `chromium`.
-fn write_patched_files(chromium: &Path, dir: &Path) {
+/// The PATCHES entries this build applies: those without a feature, and those whose feature is on.
+fn enabled_patches() -> Vec<(&'static str, Option<&'static str>)> {
+    PATCHES
+        .iter()
+        .copied()
+        .filter(|(_, feature)| {
+            feature.is_none_or(|feature| {
+                env::var_os(format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"))).is_some()
+            })
+        })
+        .collect()
+}
+
+/// Applies `patches` (files in `patch_dir`) to copies of Chromium files, writes the copies into
+/// `dir`, which the compiler searches before `chromium`, and returns their paths relative to
+/// `chromium`.
+fn write_patched_files(
+    patch_dir: &Path,
+    patches: &[(&str, Option<&str>)],
+    chromium: &Path,
+    dir: &Path,
+) -> Vec<String> {
     let _ = fs::remove_dir_all(dir);
-    for (file, from, to) in PATCHES {
-        let source = chromium.join(file);
-        let text = fs::read_to_string(&source)
-            .unwrap_or_else(|error| fail(&format!("cannot read {}: {error}", source.display())));
-        let found = text.matches(from).count();
-        if found != 1 {
-            fail(&format!(
-                "{file} contains `{from}` {found} times instead of once\n  \
-                 The Chromium pin has moved past this fix: update PATCHES in build.rs."
-            ));
-        }
+    let mut files: Vec<(String, String)> = Vec::new();
+    for (name, _) in patches {
+        let path = patch_dir.join(name);
+        let patch = fs::read_to_string(&path)
+            .unwrap_or_else(|error| fail(&format!("cannot read {}: {error}", path.display())));
+        apply_patch(name, &patch, chromium, &mut files);
+    }
+    for (file, text) in &files {
         let patched = dir.join(file);
         fs::create_dir_all(patched.parent().unwrap()).unwrap();
-        fs::write(&patched, text.replace(from, to)).unwrap();
+        fs::write(&patched, text).unwrap();
     }
+    files.into_iter().map(|(file, _)| file).collect()
+}
+
+/// Applies the unified diff `patch` to `files`, (path relative to `chromium`, text) pairs, reading a
+/// file from `chromium` the first time a patch changes it. Text before the first file is the patch's
+/// description, and `git diff` output reads as well. Every hunk must match at exactly the line it
+/// names (line endings aside), so a patch that no longer fits the pinned sources stops the build
+/// instead of applying somewhere else.
+fn apply_patch(name: &str, patch: &str, chromium: &Path, files: &mut Vec<(String, String)>) {
+    let bad = |what: String| -> ! {
+        fail(&format!(
+            "patches/{name}: {what}\n  The Chromium pin has moved past this patch: regenerate it against the pin."
+        ))
+    };
+    for file_patch in PatchSet::parse(patch, ParseOptions::unidiff()) {
+        let file_patch = file_patch.unwrap_or_else(|error| bad(error.to_string()));
+        let FileOperation::Modify { original, modified } = file_patch.operation().strip_prefix(1) else {
+            bad(format!("only changes to existing files are supported: {:?}", file_patch.operation()))
+        };
+        if original != modified {
+            bad(format!("`--- a/{original}` is not followed by `+++ b/{original}`"));
+        }
+        let file = original.as_ref();
+        let Some(diff) = file_patch.patch().as_text() else { bad(format!("{file}: binary diff")) };
+
+        let old = match files.iter().position(|(patched, _)| patched == file) {
+            Some(index) => files.remove(index).1,
+            None => {
+                let source = chromium.join(file);
+                fs::read_to_string(&source)
+                    .unwrap_or_else(|error| bad(format!("cannot read {}: {error}", source.display())))
+            }
+        };
+        // Patches hold LF lines; a Windows checkout may hold CRLF ones.
+        let crlf = old.contains("\r\n");
+        let base = if crlf { old.replace("\r\n", "\n") } else { old };
+        // diffy looks elsewhere in the file for a hunk that does not match where it says.
+        if let Some(line) = mismatch(&base, diff) {
+            bad(format!("{file} line {line} does not match the patch"));
+        }
+        let text = diffy::apply(&base, diff).unwrap_or_else(|error| bad(format!("{file}: {error}")));
+        files.push((file.to_owned(), if crlf { text.replace('\n', "\r\n") } else { text }));
+    }
+}
+
+/// The first line of `base` (1-based) where a context or removed line of `diff` differs from the
+/// line its hunk header puts it at.
+fn mismatch(base: &str, diff: &Patch<'_, str>) -> Option<usize> {
+    let lines: Vec<&str> = base.split_inclusive('\n').collect();
+    for hunk in diff.hunks() {
+        let mut at = hunk.old_range().start().saturating_sub(1);
+        for line in hunk.lines() {
+            if let Line::Context(text) | Line::Delete(text) = line {
+                if lines.get(at) != Some(text) {
+                    return Some(at + 1);
+                }
+                at += 1;
+            }
+        }
+    }
+    None
 }
 
 /// The `.cc` files a static_library lists in BUILD.gn. Reading Chromium's own list keeps the build
@@ -183,7 +289,15 @@ fn gn_sources(gn: &str, target: &str) -> Vec<String> {
 }
 
 /// Copies what a prebuilt archive holds: the library, its C header, the licenses and build facts.
-fn export(dir: &Path, manifest: &Path, chromium: &Path, out: &Path, target: &str, build: &cc::Build) {
+fn export(
+    dir: &Path,
+    manifest: &Path,
+    chromium: &Path,
+    out: &Path,
+    target: &str,
+    build: &cc::Build,
+    patches: &[(&str, Option<&str>)],
+) {
     let lib = lib_file(target);
     // Only an earlier export is replaced, so a mistyped directory is not wiped.
     let has_files = fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some());
@@ -212,8 +326,10 @@ fn export(dir: &Path, manifest: &Path, chromium: &Path, out: &Path, target: &str
     } else {
         "dynamic (/MD)"
     };
+    let patches: Vec<&str> = patches.iter().map(|(name, _)| *name).collect();
     let info = format!(
-        "target {target}\nchromium {commit}\ncompiler {compiler}\nmsvc_crt {crt}\nzucchini-sys {}\n",
+        "target {target}\nchromium {commit}\ncompiler {compiler}\nmsvc_crt {crt}\npatches {}\nzucchini-sys {}\n",
+        patches.join(" "),
         env::var("CARGO_PKG_VERSION").unwrap()
     );
     fs::write(dir.join("BUILD_INFO"), info).unwrap();

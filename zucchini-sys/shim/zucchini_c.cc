@@ -2,16 +2,19 @@
 
 #include "zucchini_c.h"
 
+#include <atomic>
 #include <cstdint>
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <string>
 
 #include "base/logging.h"
 #include "components/zucchini/buffer_view.h"
+#include "components/zucchini/crc32.h"
 #include "components/zucchini/patch_reader.h"
 #include "components/zucchini/patch_writer.h"
 #include "components/zucchini/zucchini.h"
@@ -28,6 +31,13 @@ struct zucc_patch {
 namespace {
 
 thread_local std::string g_last_error;
+
+#ifdef ZUCCHINI_RS_CRC32_HOOK
+std::atomic<zucc_crc32_fn> g_crc32{nullptr};
+// Held while writing g_crc32, so zucc_set_default_crc32 never replaces what zucc_set_crc32 chose.
+std::mutex g_crc32_mutex;
+bool g_crc32_chosen = false;
+#endif
 
 bool TooLarge(size_t size) {
   return size > std::numeric_limits<uint32_t>::max();
@@ -57,6 +67,20 @@ zucchini::ConstBufferView View(const uint8_t* data, size_t size) {
 }
 
 }  // namespace
+
+#ifdef ZUCCHINI_RS_CRC32_HOOK
+namespace zucchini {
+
+// crc32.cc's own CalculateCrc32, renamed by patches/crc32-hook.patch.
+uint32_t CalculateCrc32Builtin(const uint8_t* first, const uint8_t* last);
+
+uint32_t CalculateCrc32(const uint8_t* first, const uint8_t* last) {
+  zucc_crc32_fn crc32 = g_crc32.load(std::memory_order_acquire);
+  return crc32 ? crc32(first, static_cast<size_t>(last - first)) : CalculateCrc32Builtin(first, last);
+}
+
+}  // namespace zucchini
+#endif
 
 extern "C" {
 
@@ -190,5 +214,20 @@ void zucc_set_log_level(int level) {
   }
   logging::internal::g_min_severity.store(min_severity, std::memory_order_relaxed);
 }
+
+#ifdef ZUCCHINI_RS_CRC32_HOOK
+void zucc_set_crc32(zucc_crc32_fn fn) {
+  std::lock_guard<std::mutex> lock(g_crc32_mutex);
+  g_crc32_chosen = true;
+  g_crc32.store(fn, std::memory_order_release);
+}
+
+void zucc_set_default_crc32(zucc_crc32_fn fn) {
+  std::lock_guard<std::mutex> lock(g_crc32_mutex);
+  if (!g_crc32_chosen) {
+    g_crc32.store(fn, std::memory_order_release);
+  }
+}
+#endif
 
 }  // extern "C"

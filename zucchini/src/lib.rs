@@ -17,6 +17,17 @@
 //! because the patch header stores 32-bit sizes. Logging stays off until [`set_log_level`] turns
 //! it on.
 //!
+//! Optional features, all off by default, change Zucchini's sources to make it faster. They need a
+//! source build rather than `prebuilt`, and patches and results are byte-identical with or without
+//! them:
+//!
+//! - `vector-containers`: `std::vector` instead of `std::deque` for Zucchini's offset arrays, which
+//!   matters most with MSVC's standard library (about 1.1 s less of a 177 MB PE's apply).
+//! - `radix-sort` (turns on `vector-containers`): radix sorts those arrays (about 0.25 s less).
+//! - `crc32-hook`: `set_crc32` chooses the whole-file CRC-32 implementation.
+//! - `crc-fast` (turns on `crc32-hook`): that CRC-32 runs on crc-fast's SIMD code instead of
+//!   Chromium's byte-at-a-time loop (about 0.3 s less per 177 MB file).
+//!
 //! Gains are largest between builds of the same PE (x86, x64) or little-endian ELF (x86, x86-64,
 //! ARM, AArch64) program, even one stored uncompressed inside a larger file. Mach-O, object
 //! files, static libraries and packed or compressed binaries diff as raw bytes; .NET IL
@@ -36,6 +47,11 @@ use std::fmt;
 use std::ptr;
 
 use zucchini_sys as sys;
+
+#[cfg(feature = "crc32-hook")]
+mod crc32;
+#[cfg(feature = "crc32-hook")]
+pub use crc32::set_crc32;
 
 /// Largest file Zucchini diffs or produces; its patch header stores 32-bit sizes.
 pub const MAX_LEN: usize = u32::MAX as usize;
@@ -145,6 +161,8 @@ pub fn generate_raw(old: &[u8], new: &[u8]) -> Result<Vec<u8>, Error> {
 
 /// Makes a patch from `old` to `new` with explicit options.
 pub fn generate_with(old: &[u8], new: &[u8], options: &GenerateOptions) -> Result<Vec<u8>, Error> {
+    #[cfg(feature = "crc-fast")]
+    crc32::install_default();
     check_len(old)?;
     check_len(new)?;
     let imposed = options
@@ -221,6 +239,8 @@ pub fn apply_bounded(old: &[u8], patch: &[u8], max_new: usize) -> Result<Vec<u8>
 /// Applies `patch` to `old`, writing the new file into `new`, which must be exactly the patch's
 /// [`PatchHeader::new_size`].
 pub fn apply_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> Result<(), Error> {
+    #[cfg(feature = "crc-fast")]
+    crc32::install_default();
     // SAFETY: `old` and `patch` are readable and `new` writable for their lengths.
     let code = unsafe {
         sys::zucc_apply(old.as_ptr(), old.len(), patch.as_ptr(), patch.len(), new.as_mut_ptr(), new.len())

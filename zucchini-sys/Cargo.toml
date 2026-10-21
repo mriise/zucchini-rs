@@ -15,8 +15,20 @@ links = "zucchini"
 # in prebuilt.txt, instead of compiling Chromium sources with clang.
 prebuilt = ["dep:ureq", "dep:sha2", "dep:flate2", "dep:tar"]
 
+# Each of these applies one patch in patches/ to Zucchini's sources, so they need a source build.
+# Patches and results are byte-identical with or without them.
+#
+# std::vector instead of std::deque for Zucchini's offset arrays: about 1.1 s less of a 177 MB PE's
+# apply with MSVC's standard library. Needs contiguous memory for those arrays.
+vector-containers = []
+# Radix sort for those arrays: about 0.25 s less of the same apply, for a scratch copy while sorting.
+radix-sort = ["vector-containers"]
+# zucc_set_crc32, which replaces the whole-file CRC-32 Zucchini computes byte by byte.
+crc32-hook = []
+
 [build-dependencies]
 cc = "1.4.6"
+diffy = "0.5.2"
 flate2 = { version = "1.1.10", optional = true }
 sha2 = { version = "0.11.0", optional = true }
 tar = { version = "0.4.46", optional = true }

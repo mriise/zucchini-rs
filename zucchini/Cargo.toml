@@ -12,6 +12,17 @@ rust-version.workspace = true
 [features]
 # Link the prebuilt, attested static library instead of compiling Chromium sources.
 prebuilt = ["zucchini-sys/prebuilt"]
+# Patches to Zucchini's sources, off by default; see zucchini-sys's features and the crate docs.
+vector-containers = ["zucchini-sys/vector-containers"]
+radix-sort = ["zucchini-sys/radix-sort"]
+# set_crc32, which chooses the whole-file CRC-32 implementation.
+crc32-hook = ["zucchini-sys/crc32-hook"]
+# Compute the whole-file CRC-32 with crc-fast's SIMD code instead of Chromium's byte-at-a-time loop:
+# bit-identical, and about 0.6 s faster per apply on a 177 MB executable.
+crc-fast = ["crc32-hook", "dep:crc-fast"]
 
 [dependencies]
+# 1.10 needs a newer Rust than this crate's rust-version. Its default features add a C library and,
+# without std, a panic handler; it also builds as a cdylib, which needs std or that handler.
+crc-fast = { version = "1.9.0", default-features = false, features = ["std"], optional = true }
 zucchini-sys = { workspace = true }

@@ -1,0 +1,454 @@
+Zucchini keeps reference locations, targets and equivalences in std::deque. Chromium builds
+against libc++, whose deque blocks hold 4 KiB; MSVC's hold 16 bytes, so sorting and searching
+millions of offsets pays for an allocation and an indirection every few of them. std::vector
+gives byte-identical patches and results, at the cost of contiguous allocations and some peak
+memory while a vector grows.
+
+--- a/components/zucchini/abs32_utils.cc
++++ b/components/zucchini/abs32_utils.cc
+@@ -89,12 +89,12 @@
+ Abs32RvaExtractorWin32::Abs32RvaExtractorWin32(
+     ConstBufferView image,
+     AbsoluteAddress&& addr,
+-    const std::deque<offset_t>& abs32_locations,
++    const std::vector<offset_t>& abs32_locations,
+     offset_t lo,
+     offset_t hi)
+     : image_(image), addr_(std::move(addr)) {
+   CHECK_LE(lo, hi);
+-  auto find_and_check = [this](const std::deque<offset_t>& locations,
++  auto find_and_check = [this](const std::vector<offset_t>& locations,
+                                offset_t offset) {
+     auto it = std::lower_bound(locations.begin(), locations.end(), offset);
+     // Ensure that |offset| does not straddle a reference body.
+@@ -167,12 +167,12 @@
+ size_t RemoveUntranslatableAbs32(ConstBufferView image,
+                                  AbsoluteAddress&& addr,
+                                  const AddressTranslator& translator,
+-                                 std::deque<offset_t>* locations) {
++                                 std::vector<offset_t>* locations) {
+   AddressTranslator::RvaToOffsetCache target_rva_checker(translator);
+   Abs32RvaExtractorWin32 extractor(image, std::move(addr), *locations, 0,
+                                    image.size());
+   Abs32ReaderWin32 reader(std::move(extractor), translator);
+-  std::deque<offset_t>::iterator write_it = locations->begin();
++  std::vector<offset_t>::iterator write_it = locations->begin();
+   // |reader| reads |locations| while |write_it| modifies it. However, there's
+   // no conflict since read occurs before write, and can skip ahead.
+   for (auto ref = reader.GetNext(); ref.has_value(); ref = reader.GetNext())
+@@ -184,7 +184,7 @@
+ }
+ 
+ size_t RemoveOverlappingAbs32Locations(uint32_t width,
+-                                       std::deque<offset_t>* locations) {
++                                       std::vector<offset_t>* locations) {
+   if (locations->size() <= 1)
+     return 0;
+ 
+--- a/components/zucchini/abs32_utils.h
++++ b/components/zucchini/abs32_utils.h
+@@ -8,7 +8,7 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ 
+-#include <deque>
++#include <vector>
+ #include <optional>
+ 
+ #include "components/zucchini/address_translator.h"
+@@ -70,7 +70,7 @@
+   // length |addr.width()|) in |abs32_locations|.
+   Abs32RvaExtractorWin32(ConstBufferView image,
+                          AbsoluteAddress&& addr,
+-                         const std::deque<offset_t>& abs32_locations,
++                         const std::vector<offset_t>& abs32_locations,
+                          offset_t lo,
+                          offset_t hi);
+   Abs32RvaExtractorWin32(Abs32RvaExtractorWin32&&);
+@@ -83,8 +83,8 @@
+  private:
+   ConstBufferView image_;
+   AbsoluteAddress addr_;
+-  std::deque<offset_t>::const_iterator cur_abs32_;
+-  std::deque<offset_t>::const_iterator end_abs32_;
++  std::vector<offset_t>::const_iterator cur_abs32_;
++  std::vector<offset_t>::const_iterator end_abs32_;
+ };
+ 
+ // A reader for Win32 abs32 references that filters and translates results from
+@@ -130,12 +130,12 @@
+ size_t RemoveUntranslatableAbs32(ConstBufferView image,
+                                  AbsoluteAddress&& addr,
+                                  const AddressTranslator& translator,
+-                                 std::deque<offset_t>* locations);
++                                 std::vector<offset_t>* locations);
+ 
+ // Given a sorted list of abs32 |locations|, removes all elements whose body
+ // (with |width| given) overlaps with the body of a previous element.
+ size_t RemoveOverlappingAbs32Locations(uint32_t width,
+-                                       std::deque<offset_t>* locations);
++                                       std::vector<offset_t>* locations);
+ 
+ }  // namespace zucchini
+ 
+--- a/components/zucchini/algorithm.h
++++ b/components/zucchini/algorithm.h
+@@ -8,7 +8,6 @@
+ #include <stddef.h>
+ 
+ #include <algorithm>
+-#include <deque>
+ #include <type_traits>
+ #include <vector>
+ 
+@@ -70,7 +69,7 @@
+ 
+ // Sorts values in |container| and removes duplicates.
+ template <class T>
+-void SortAndUniquify(std::deque<T>* container) {
++void SortAndUniquify(std::vector<T>* container) {
+   std::sort(container->begin(), container->end());
+   container->erase(std::unique(container->begin(), container->end()),
+                    container->end());
+--- a/components/zucchini/disassembler_elf.h
++++ b/components/zucchini/disassembler_elf.h
+@@ -9,7 +9,6 @@
+ 
+ #include <algorithm>
+ #include <array>
+-#include <deque>
+ #include <memory>
+ #include <string>
+ #include <vector>
+@@ -241,7 +240,7 @@
+   std::vector<raw_ptr<const typename Traits::Elf_Shdr>> exec_headers_;
+ 
+   // Sorted file offsets of abs32 locations.
+-  std::deque<offset_t> abs32_locations_;
++  std::vector<offset_t> abs32_locations_;
+ };
+ 
+ // Disassembler for ELF with Intel architectures.
+@@ -271,8 +270,7 @@
+ 
+  private:
+   // Sorted file offsets of rel32 locations.
+-  // Using std::deque to reduce peak memory footprint.
+-  std::deque<offset_t> rel32_locations_;
++  std::vector<offset_t> rel32_locations_;
+ };
+ 
+ using DisassemblerElfX86 = DisassemblerElfIntel<Elf32IntelTraits>;
+@@ -316,7 +314,7 @@
+ 
+  protected:
+   // Sorted file offsets of rel32 locations for each rel32 address type.
+-  std::array<std::deque<offset_t>, Traits::ArmReferenceType::kTypeCount>
++  std::array<std::vector<offset_t>, Traits::ArmReferenceType::kTypeCount>
+       rel32_locations_table_;
+ };
+ 
+--- a/components/zucchini/disassembler_win32.h
++++ b/components/zucchini/disassembler_win32.h
+@@ -8,7 +8,6 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ 
+-#include <deque>
+ #include <memory>
+ #include <string>
+ #include <utility>
+@@ -114,9 +113,8 @@
+   BufferRegion reloc_region_ = {kInvalidOffset, 0U};
+   std::vector<offset_t> reloc_block_offsets_;
+   offset_t reloc_end_ = 0;
+-  std::deque<offset_t> abs32_locations_;
+-  // Using std::deque to reduce peak memory footprint.
+-  std::deque<offset_t> rel32_locations_;
++  std::vector<offset_t> abs32_locations_;
++  std::vector<offset_t> rel32_locations_;
+ 
+   // Initialization states of reference storage, used for lazy initialization.
+   // TODO(huangs): Investigate whether lazy initialization is useful for memory
+--- a/components/zucchini/equivalence_map.cc
++++ b/components/zucchini/equivalence_map.cc
+@@ -5,7 +5,6 @@
+ #include "components/zucchini/equivalence_map.h"
+ 
+ #include <algorithm>
+-#include <deque>
+ #include <tuple>
+ #include <utility>
+ #include <vector>
+@@ -216,7 +215,7 @@
+ 
+ /******** OffsetMapper ********/
+ 
+-OffsetMapper::OffsetMapper(std::deque<Equivalence>&& equivalences,
++OffsetMapper::OffsetMapper(std::vector<Equivalence>&& equivalences,
+                            offset_t old_image_size,
+                            offset_t new_image_size)
+     : equivalences_(std::move(equivalences)),
+@@ -292,7 +291,7 @@
+                                                 : kOffsetBound - 1;
+ }
+ 
+-void OffsetMapper::ForwardProjectAll(std::deque<offset_t>* offsets) const {
++void OffsetMapper::ForwardProjectAll(std::vector<offset_t>* offsets) const {
+   DCHECK(std::is_sorted(offsets->begin(), offsets->end()));
+   auto current = equivalences_.begin();
+   for (auto& src : *offsets) {
+@@ -311,7 +310,7 @@
+ }
+ 
+ void OffsetMapper::PruneEquivalencesAndSortBySource(
+-    std::deque<Equivalence>* equivalences) {
++    std::vector<Equivalence>* equivalences) {
+   std::sort(equivalences->begin(), equivalences->end(),
+             [](const Equivalence& a, const Equivalence& b) {
+               // Sort by ascending |src_offset| (required by loop below),
+--- a/components/zucchini/equivalence_map.h
++++ b/components/zucchini/equivalence_map.h
+@@ -7,7 +7,6 @@
+ 
+ #include <stddef.h>
+ 
+-#include <deque>
+ #include <limits>
+ #include <vector>
+ 
+@@ -83,13 +82,13 @@
+ // bytes in |old_image| and |new_image|) one-to-one.
+ class OffsetMapper {
+  public:
+-  using const_iterator = std::deque<Equivalence>::const_iterator;
++  using const_iterator = std::vector<Equivalence>::const_iterator;
+ 
+   // Constructors for various data sources. "Old" and "new" image sizes are
+   // needed for bounds checks and to handle dangling targets.
+   // - From a list of |equivalences|, already sorted (by |src_offset|) and
+   //   pruned, useful for tests.
+-  OffsetMapper(std::deque<Equivalence>&& equivalences,
++  OffsetMapper(std::vector<Equivalence>&& equivalences,
+                offset_t old_image_size,
+                offset_t new_image_size);
+   // - From a generator, useful for Zucchini-apply.
+@@ -129,10 +128,10 @@
+   // Given sorted |offsets|, applies a projection in-place of all offsets that
+   // are part of a pruned equivalence from |old_image| to |new_image|. Other
+   // offsets are removed from |offsets|.
+-  void ForwardProjectAll(std::deque<offset_t>* offsets) const;
++  void ForwardProjectAll(std::vector<offset_t>* offsets) const;
+ 
+   // Accessor for testing.
+-  const std::deque<Equivalence> equivalences() const { return equivalences_; }
++  const std::vector<Equivalence> equivalences() const { return equivalences_; }
+ 
+   // Sorts |equivalences| by |src_offset| and removes all source overlaps; so a
+   // source location that was covered by some Equivalence would become covered
+@@ -141,12 +140,12 @@
+   // of a tie, the Equivalence with minimal |src_offset|. |equivalences| may
+   // change in size since empty Equivalences are removed.
+   static void PruneEquivalencesAndSortBySource(
+-      std::deque<Equivalence>* equivalences);
++      std::vector<Equivalence>* equivalences);
+ 
+  private:
+   // |equivalences_| is pruned, i.e., no "old" blocks overlap (and no "new"
+   // block overlaps). Also, it is sorted by "old" offsets.
+-  std::deque<Equivalence> equivalences_;
++  std::vector<Equivalence> equivalences_;
+   const offset_t old_image_size_;
+   const offset_t new_image_size_;
+ };
+--- a/components/zucchini/rel32_finder.cc
++++ b/components/zucchini/rel32_finder.cc
+@@ -15,7 +15,7 @@
+ 
+ Abs32GapFinder::Abs32GapFinder(ConstBufferView image,
+                                ConstBufferView region,
+-                               const std::deque<offset_t>& abs32_locations,
++                               const std::vector<offset_t>& abs32_locations,
+                                size_t abs32_width)
+     : base_(image.begin()),
+       region_end_(region.end()),
+--- a/components/zucchini/rel32_finder.h
++++ b/components/zucchini/rel32_finder.h
+@@ -7,7 +7,7 @@
+ 
+ #include <stddef.h>
+ 
+-#include <deque>
++#include <vector>
+ 
+ #include "components/zucchini/address_translator.h"
+ #include "components/zucchini/arm_utils.h"
+@@ -47,7 +47,7 @@
+   // which must be part of |image|.
+   Abs32GapFinder(ConstBufferView image,
+                  ConstBufferView region,
+-                 const std::deque<offset_t>& abs32_locations,
++                 const std::vector<offset_t>& abs32_locations,
+                  size_t abs32_width);
+   Abs32GapFinder(const Abs32GapFinder&) = delete;
+   const Abs32GapFinder& operator=(const Abs32GapFinder&) = delete;
+@@ -63,8 +63,8 @@
+   const ConstBufferView::const_iterator base_;
+   const ConstBufferView::const_iterator region_end_;
+   ConstBufferView::const_iterator cur_lo_;
+-  const std::deque<offset_t>::const_iterator abs32_end_;
+-  std::deque<offset_t>::const_iterator abs32_cur_;
++  const std::vector<offset_t>::const_iterator abs32_end_;
++  std::vector<offset_t>::const_iterator abs32_cur_;
+   const size_t abs32_width_;
+   ConstBufferView gap_;
+ };
+--- a/components/zucchini/rel32_utils.cc
++++ b/components/zucchini/rel32_utils.cc
+@@ -16,7 +16,7 @@
+ Rel32ReaderX86::Rel32ReaderX86(ConstBufferView image,
+                                offset_t lo,
+                                offset_t hi,
+-                               const std::deque<offset_t>* locations,
++                               const std::vector<offset_t>* locations,
+                                const AddressTranslator& translator)
+     : image_(image),
+       target_rva_to_offset_(translator),
+--- a/components/zucchini/rel32_utils.h
++++ b/components/zucchini/rel32_utils.h
+@@ -7,7 +7,7 @@
+ 
+ #include <algorithm>
+ #include <array>
+-#include <deque>
++#include <vector>
+ #include <memory>
+ #include <optional>
+ 
+@@ -33,7 +33,7 @@
+   Rel32ReaderX86(ConstBufferView image,
+                  offset_t lo,
+                  offset_t hi,
+-                 const std::deque<offset_t>* locations,
++                 const std::vector<offset_t>* locations,
+                  const AddressTranslator& translator);
+   Rel32ReaderX86(const Rel32ReaderX86&) = delete;
+   const Rel32ReaderX86& operator=(const Rel32ReaderX86&) = delete;
+@@ -47,8 +47,8 @@
+   AddressTranslator::RvaToOffsetCache target_rva_to_offset_;
+   AddressTranslator::OffsetToRvaCache location_offset_to_rva_;
+   const offset_t hi_;
+-  const std::deque<offset_t>::const_iterator last_;
+-  std::deque<offset_t>::const_iterator current_;
++  const std::vector<offset_t>::const_iterator last_;
++  std::vector<offset_t>::const_iterator current_;
+ };
+ 
+ // Writer for x86 / x64 rel32 References.
+@@ -80,7 +80,7 @@
+ 
+   Rel32ReaderArm(const AddressTranslator& translator,
+                  ConstBufferView view,
+-                 const std::deque<offset_t>& rel32_locations,
++                 const std::vector<offset_t>& rel32_locations,
+                  offset_t lo,
+                  offset_t hi)
+       : view_(view),
+@@ -114,8 +114,8 @@
+   ConstBufferView view_;
+   AddressTranslator::OffsetToRvaCache offset_to_rva_;
+   AddressTranslator::RvaToOffsetCache rva_to_offset_;
+-  std::deque<offset_t>::const_iterator cur_it_;
+-  std::deque<offset_t>::const_iterator rel32_end_;
++  std::vector<offset_t>::const_iterator cur_it_;
++  std::vector<offset_t>::const_iterator rel32_end_;
+   offset_t hi_;
+ };
+ 
+--- a/components/zucchini/target_pool.cc
++++ b/components/zucchini/target_pool.cc
+@@ -16,7 +16,7 @@
+ 
+ TargetPool::TargetPool() = default;
+ 
+-TargetPool::TargetPool(std::deque<offset_t>&& targets) {
++TargetPool::TargetPool(std::vector<offset_t>&& targets) {
+   DCHECK(targets_.empty());
+   DCHECK(std::is_sorted(targets.begin(), targets.end()));
+   targets_ = std::move(targets);
+--- a/components/zucchini/target_pool.h
++++ b/components/zucchini/target_pool.h
+@@ -7,7 +7,6 @@
+ 
+ #include <stddef.h>
+ 
+-#include <deque>
+ #include <vector>
+ 
+ #include "components/zucchini/image_utils.h"
+@@ -22,11 +21,11 @@
+ // with a list of associated reference types, only used during patch generation.
+ class TargetPool {
+  public:
+-  using const_iterator = std::deque<offset_t>::const_iterator;
++  using const_iterator = std::vector<offset_t>::const_iterator;
+ 
+   TargetPool();
+   // Initializes the object with given sorted and unique |targets|.
+-  explicit TargetPool(std::deque<offset_t>&& targets);
++  explicit TargetPool(std::vector<offset_t>&& targets);
+   TargetPool(TargetPool&&);
+   TargetPool(const TargetPool&);
+   ~TargetPool();
+@@ -63,7 +62,7 @@
+   void FilterAndProject(const OffsetMapper& offset_mapper);
+ 
+   // Accessors for testing.
+-  const std::deque<offset_t>& targets() const { return targets_; }
++  const std::vector<offset_t>& targets() const { return targets_; }
+   const std::vector<TypeTag>& types() const { return types_; }
+ 
+   // Returns the number of targets.
+@@ -73,7 +72,7 @@
+ 
+  private:
+   std::vector<TypeTag> types_;     // Enumerates type_tag for this pool.
+-  std::deque<offset_t> targets_;   // Targets for pool in ascending order.
++  std::vector<offset_t> targets_;   // Targets for pool in ascending order.
+ };
+ 
+ }  // namespace zucchini
+--- a/components/zucchini/targets_affinity.cc
++++ b/components/zucchini/targets_affinity.cc
+@@ -21,8 +21,8 @@
+ 
+ void TargetsAffinity::InferFromSimilarities(
+     const EquivalenceMap& equivalences,
+-    const std::deque<offset_t>& old_targets,
+-    const std::deque<offset_t>& new_targets) {
++    const std::vector<offset_t>& old_targets,
++    const std::vector<offset_t>& new_targets) {
+   forward_association_.assign(old_targets.size(), {});
+   backward_association_.assign(new_targets.size(), {});
+ 
+--- a/components/zucchini/targets_affinity.h
++++ b/components/zucchini/targets_affinity.h
+@@ -8,7 +8,6 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ 
+-#include <deque>
+ #include <vector>
+ 
+ #include "components/zucchini/image_utils.h"
+@@ -31,8 +30,8 @@
+   // affinity scores. Both |old_targets| and |new_targets| are targets in the
+   // same pool and are sorted in ascending order.
+   void InferFromSimilarities(const EquivalenceMap& equivalence_map,
+-                             const std::deque<offset_t>& old_targets,
+-                             const std::deque<offset_t>& new_targets);
++                             const std::vector<offset_t>& old_targets,
++                             const std::vector<offset_t>& new_targets);
+ 
+   // Assigns labels to targets based on associations previously inferred, using
+   // |min_affinity| to reject associations with weak |affinity|. Label 0 is

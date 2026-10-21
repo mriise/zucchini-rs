@@ -27,3 +27,19 @@ release. Set `CXX` to use another compiler.
 | `ZUCCHINI_SYS_EXPORT_DIR=<dir>` | Also write what a prebuilt archive holds to `<dir>` |
 
 Zucchini is compiled with `-O2` even in debug builds, because unoptimised generation is very slow.
+
+Optional features, all off by default, patch Zucchini's sources to make it faster; patches and
+results are byte-identical with or without them. They need a source build: with `prebuilt` the build
+stops and says so, since prebuilt libraries are built without them. A library linked through
+`ZUCCHINI_SYS_LIB_DIR` is unchecked, so build it with the same features.
+
+| Feature (`zucchini`) | Effect on a 177 MB PE's apply |
+|---|---|
+| `vector-containers` | `std::vector` instead of `std::deque`: about 1.1 s less with MSVC's standard library; needs contiguous memory for the offset arrays |
+| `radix-sort` | radix sorts the offset arrays (turns on `vector-containers`): about 0.25 s less, for a scratch copy of each array while it sorts |
+| `crc32-hook` | `zucchini::set_crc32` chooses the whole-file CRC-32, through the C API's `zucc_set_crc32` |
+| `crc-fast` | `crc32-hook`, with the crc-fast crate's SIMD CRC-32 as the default: about 0.3 s less per file, since Chromium's loop reads a byte at a time |
+
+```sh
+cargo test --workspace --features zucchini/radix-sort,zucchini/crc-fast   # every patch
+```

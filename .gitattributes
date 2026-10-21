@@ -1,0 +1,2 @@
+# build.rs applies these to Chromium's LF sources; keep them LF on every checkout.
+*.patch text eol=lf
