@@ -31,7 +31,9 @@ namespace {
 
 thread_local std::string g_last_error;
 
+#ifdef ZUCCHINI_RS_CRC32_HOOK
 std::atomic<zucc_crc32_fn> g_crc32{nullptr};
+#endif
 
 bool TooLarge(size_t size) {
   return size > std::numeric_limits<uint32_t>::max();
@@ -62,9 +64,10 @@ zucchini::ConstBufferView View(const uint8_t* data, size_t size) {
 
 }  // namespace
 
+#ifdef ZUCCHINI_RS_CRC32_HOOK
 namespace zucchini {
 
-// crc32.cc's own CalculateCrc32, renamed by build.rs's PATCHES.
+// crc32.cc's own CalculateCrc32, renamed by patches/crc32-hook.patch.
 uint32_t CalculateCrc32Builtin(const uint8_t* first, const uint8_t* last);
 
 uint32_t CalculateCrc32(const uint8_t* first, const uint8_t* last) {
@@ -73,6 +76,7 @@ uint32_t CalculateCrc32(const uint8_t* first, const uint8_t* last) {
 }
 
 }  // namespace zucchini
+#endif
 
 extern "C" {
 
@@ -207,8 +211,10 @@ void zucc_set_log_level(int level) {
   logging::internal::g_min_severity.store(min_severity, std::memory_order_relaxed);
 }
 
+#ifdef ZUCCHINI_RS_CRC32_HOOK
 void zucc_set_crc32(zucc_crc32_fn fn) {
   g_crc32.store(fn, std::memory_order_release);
 }
+#endif
 
 }  // extern "C"

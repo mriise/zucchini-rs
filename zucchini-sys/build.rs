@@ -24,53 +24,17 @@ use std::process::Command;
 
 const LIB: &str = "zucchini";
 
-/// Exact text replacements build.rs applies to copies of Chromium files, as (file, from, to), so the
-/// pinned sources build with the standard libraries this crate supports. Each `from` must occur
-/// exactly once: when a new pin changes the text, the build stops and says so.
-const PATCHES: &[(&str, &str, &str)] = &[
-    (
-        // libstdc++ before GCC 15 lacks std::vector's C++23 from_range constructor. The line sits in
-        // an `if consteval` branch, and the iterator pair constructor copies the same elements.
-        "base/containers/span.h",
-        "std::vector(std::from_range, src)",
-        "std::vector<T>(src.begin(), src.end())",
-    ),
-    (
-        // The C API defines CalculateCrc32 (shim/zucchini_c.cc): it calls the function
-        // zucc_set_crc32 chose, or this byte-at-a-time table loop when none was.
-        "components/zucchini/crc32.cc",
-        "uint32_t CalculateCrc32(const uint8_t* first, const uint8_t* last) {",
-        "uint32_t CalculateCrc32Builtin(const uint8_t* first, const uint8_t* last) {",
-    ),
-    (
-        // zucchini_rs::Sort (shim/zucchini_rs/sort.h) radix sorts offset vectors: the same order,
-        // in about a quarter of the time for the millions of targets a large executable has.
-        "components/zucchini/algorithm.h",
-        "#include \"base/check_op.h\"",
-        "#include \"base/check_op.h\"\n#include \"zucchini_rs/sort.h\"",
-    ),
-    (
-        "components/zucchini/algorithm.h",
-        "  std::sort(container->begin(), container->end());\n  container->erase(",
-        "  zucchini_rs::Sort(container);\n  container->erase(",
-    ),
-    (
-        "components/zucchini/target_pool.cc",
-        "  std::sort(targets_.begin(), targets_.end());",
-        "  zucchini_rs::Sort(&targets_);",
-    ),
+/// Unified diffs in `patches/` that build.rs applies, in this order, to copies of Chromium files,
+/// with the Cargo feature that turns each on. Each file's header says what it changes and why.
+/// Only the libstdc++ fix applies by default; the others change Zucchini's code for speed, and
+/// patches and results stay byte-identical with or without them.
+const PATCHES: &[(&str, Option<&str>)] = &[
+    ("libstdcxx-span.patch", None),
+    ("vector-containers.patch", Some("vector-containers")),
+    // Written against the vector-containers result; the feature turns that one on too.
+    ("radix-sort.patch", Some("radix-sort")),
+    ("crc32-hook.patch", Some("crc32-hook")),
 ];
-
-/// Zucchini keeps reference locations, targets and equivalences in std::deque, which build.rs
-/// replaces with std::vector in every Zucchini file. Chromium builds against libc++, whose deque
-/// blocks hold 4 KiB; MSVC's hold 16 bytes, so sorting and searching millions of offsets pays for an
-/// allocation and an indirection every few of them, and applying a patch to a large executable
-/// takes about a third longer. A vector costs some peak memory while it grows.
-const DEQUE: (&str, &str) = ("std::deque", "std::vector");
-
-/// Calls a deque does cheaply and a vector does not. Zucchini makes none of them, and build.rs stops
-/// if a new pin starts to.
-const FRONT_CALLS: &[&str] = &["push_front", "pop_front", "emplace_front"];
 
 fn main() {
     let target = env::var("TARGET").unwrap();
@@ -106,6 +70,17 @@ fn main() {
 
     #[cfg(feature = "prebuilt")]
     if !env_flag("ZUCCHINI_SYS_FROM_SOURCE") {
+        // Prebuilt archives are built without the optional patches: linking one would quietly drop
+        // a speed-up, or fail to link zucc_set_crc32.
+        let features: Vec<&str> = enabled_patches().into_iter().filter_map(|(_, feature)| feature).collect();
+        if !features.is_empty() {
+            let features = features.join("`, `");
+            fail(&format!(
+                "the `{features}` features change Zucchini's sources, but prebuilt libraries are \
+                 built without them\n  Build from source instead: set ZUCCHINI_SYS_FROM_SOURCE=1, or \
+                 drop those features or `prebuilt`."
+            ));
+        }
         let dir = prebuilt::fetch(&manifest, &out, &target);
         link(&dir.join("lib"), &target);
         return;
@@ -134,7 +109,8 @@ fn build_from_source(manifest: &Path, out: &Path, target: &str) {
     }
 
     let patched = out.join("chromium-patched");
-    let patched_files = write_patched_files(&chromium, &patched);
+    let patches = enabled_patches();
+    let patched_files = write_patched_files(&manifest.join("patches"), &patches, &chromium, &patched);
     // A patched source is compiled from its copy; a patched header is found there first.
     let sources: Vec<PathBuf> = sources
         .iter()
@@ -168,89 +144,158 @@ fn build_from_source(manifest: &Path, out: &Path, target: &str) {
     if !env_flag("ZUCCHINI_SYS_DCHECK") {
         build.define("NDEBUG", None);
     }
+    if patches.iter().any(|(_, feature)| *feature == Some("crc32-hook")) {
+        // shim/zucchini_c.cc then defines zucc_set_crc32 and the CalculateCrc32 that calls it.
+        build.define("ZUCCHINI_RS_CRC32_HOOK", None);
+    }
     if !cxx_vars(target).iter().any(|var| env::var_os(var).is_some()) {
         build.compiler(if msvc { "clang-cl" } else { "clang++" });
     }
     build.compile(LIB);
 
-    for path in [shim, component, chromium.join("base"), chromium.join("build")] {
+    for path in [shim, manifest.join("patches"), component, chromium.join("base"), chromium.join("build")] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
 
     if let Some(dir) = env::var_os("ZUCCHINI_SYS_EXPORT_DIR") {
-        export(Path::new(&dir), manifest, &chromium, out, target, &build);
+        export(Path::new(&dir), manifest, &chromium, out, target, &build, &patches);
     }
 }
 
-/// Writes the files PATCHES and DEQUE change into `dir`, which the compiler searches before
-/// `chromium`, and returns their paths relative to `chromium`.
-fn write_patched_files(chromium: &Path, dir: &Path) -> Vec<String> {
+/// The PATCHES entries this build applies: those without a feature, and those whose feature is on.
+fn enabled_patches() -> Vec<(&'static str, Option<&'static str>)> {
+    PATCHES
+        .iter()
+        .copied()
+        .filter(|(_, feature)| {
+            feature.is_none_or(|feature| {
+                env::var_os(format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"))).is_some()
+            })
+        })
+        .collect()
+}
+
+/// Applies `patches` (files in `patch_dir`) to copies of Chromium files, writes the copies into
+/// `dir`, which the compiler searches before `chromium`, and returns their paths relative to
+/// `chromium`.
+fn write_patched_files(
+    patch_dir: &Path,
+    patches: &[(&str, Option<&str>)],
+    chromium: &Path,
+    dir: &Path,
+) -> Vec<String> {
     let _ = fs::remove_dir_all(dir);
-    let read = |file: &str| {
-        let source = chromium.join(file);
-        fs::read_to_string(&source)
-            .unwrap_or_else(|error| fail(&format!("cannot read {}: {error}", source.display())))
-    };
     let mut files: Vec<(String, String)> = Vec::new();
-
-    for (file, from, to) in PATCHES {
-        // Entries for the same file apply one after another.
-        let text = match files.iter().position(|(patched, _)| patched == file) {
-            Some(i) => files.remove(i).1,
-            None => read(file),
-        };
-        let found = text.matches(from).count();
-        if found != 1 {
-            fail(&format!(
-                "{file} contains `{from}` {found} times instead of once\n  \
-                 The Chromium pin has moved past this fix: update PATCHES in build.rs."
-            ));
-        }
-        files.push((file.to_string(), text.replace(from, to)));
+    for (name, _) in patches {
+        let path = patch_dir.join(name);
+        let patch = fs::read_to_string(&path)
+            .unwrap_or_else(|error| fail(&format!("cannot read {}: {error}", path.display())));
+        apply_patch(name, &patch, chromium, &mut files);
     }
-
-    let (deque, vector) = DEQUE;
-    for file in zucchini_code(chromium) {
-        let text = match files.iter().position(|(patched, _)| *patched == file) {
-            Some(i) => files.remove(i).1,
-            None => read(&file),
-        };
-        if let Some(call) = FRONT_CALLS.iter().find(|call| text.contains(*call)) {
-            fail(&format!(
-                "{file} calls {call}, which build.rs's swap of std::deque for std::vector makes slow\n  \
-                 Drop the DEQUE swap in build.rs, or keep std::deque for that container."
-            ));
-        }
-        let text = if text.contains(deque) { text.replace(deque, vector) } else { text };
-        files.push((file, text));
-    }
-
-    let mut written = Vec::new();
-    for (file, text) in files {
-        if text == read(&file) {
-            continue;
-        }
-        let patched = dir.join(&file);
+    for (file, text) in &files {
+        let patched = dir.join(file);
         fs::create_dir_all(patched.parent().unwrap()).unwrap();
         fs::write(&patched, text).unwrap();
-        written.push(file);
     }
-    written
+    files.into_iter().map(|(file, _)| file).collect()
 }
 
-/// Zucchini's own headers and sources, without tests and fuzzers, relative to `chromium`.
-fn zucchini_code(chromium: &Path) -> Vec<String> {
-    let component = chromium.join("components/zucchini");
-    let entries = fs::read_dir(&component)
-        .unwrap_or_else(|error| fail(&format!("cannot list {}: {error}", component.display())));
-    let mut files: Vec<String> = entries
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter(|name| name.ends_with(".h") || name.ends_with(".cc"))
-        .filter(|name| !name.contains("unittest") && !name.contains("fuzzer") && !name.contains("test_"))
-        .map(|name| format!("components/zucchini/{name}"))
-        .collect();
-    files.sort();
-    files
+/// Applies the unified diff `patch` to `files`, (path relative to `chromium`, text) pairs, reading a
+/// file from `chromium` the first time a patch changes it. Text before the first `--- ` line is the
+/// patch's description. Hunks apply at exactly the lines they name, and every context and removed
+/// line must match (line endings aside), so a patch that no longer fits the pinned sources stops the
+/// build instead of applying somewhere else.
+fn apply_patch(name: &str, patch: &str, chromium: &Path, files: &mut Vec<(String, String)>) {
+    let bad = |what: String| -> ! {
+        fail(&format!(
+            "patches/{name}: {what}\n  The Chromium pin has moved past this patch: regenerate it against the pin."
+        ))
+    };
+    let lines: Vec<&str> = patch.lines().collect();
+    let mut i =
+        lines.iter().position(|line| line.starts_with("--- ")).unwrap_or_else(|| bad("holds no diff".into()));
+    while i < lines.len() {
+        let Some(file) = lines[i].strip_prefix("--- a/") else {
+            bad(format!("expected `--- a/<file>`: {}", lines[i]))
+        };
+        if lines.get(i + 1) != Some(&format!("+++ b/{file}").as_str()) {
+            bad(format!("`--- a/{file}` is not followed by `+++ b/{file}`"));
+        }
+        i += 2;
+
+        let old = match files.iter().position(|(patched, _)| patched == file) {
+            Some(index) => files.remove(index).1,
+            None => {
+                let source = chromium.join(file);
+                fs::read_to_string(&source)
+                    .unwrap_or_else(|error| bad(format!("cannot read {}: {error}", source.display())))
+            }
+        };
+        let source: Vec<&str> = old.lines().collect();
+        let mut result: Vec<&str> = Vec::with_capacity(source.len());
+        let mut next = 0;
+        while let Some(header) = lines.get(i).filter(|line| line.starts_with("@@ ")) {
+            let (start, old_count, new_count) =
+                hunk_range(header).unwrap_or_else(|| bad(format!("bad hunk header: {header}")));
+            // A hunk that removes nothing and adds lines names the line before them.
+            let start = if old_count == 0 { start } else { start.saturating_sub(1) };
+            if start < next || start > source.len() {
+                bad(format!("{file}: hunk `{header}` is out of order or past the end"));
+            }
+            result.extend_from_slice(&source[next..start]);
+            next = start;
+            i += 1;
+            let (mut old_seen, mut new_seen) = (0, 0);
+            while old_seen < old_count || new_seen < new_count {
+                let Some(&line) = lines.get(i) else { bad(format!("{file}: hunk `{header}` ends early")) };
+                let (kind, text) =
+                    if line.is_empty() { (' ', "") } else { (line.as_bytes()[0] as char, &line[1..]) };
+                match kind {
+                    ' ' | '-' => {
+                        if source.get(next) != Some(&text) {
+                            bad(format!("{file} line {}: expected `{text}`", next + 1));
+                        }
+                        next += 1;
+                        old_seen += 1;
+                        if kind == ' ' {
+                            result.push(text);
+                            new_seen += 1;
+                        }
+                    }
+                    '+' => {
+                        result.push(text);
+                        new_seen += 1;
+                    }
+                    _ => bad(format!("{file}: unexpected line in hunk `{header}`: {line}")),
+                }
+                if old_seen > old_count || new_seen > new_count {
+                    bad(format!("{file}: hunk `{header}` holds more lines than it counts"));
+                }
+                i += 1;
+            }
+        }
+        result.extend_from_slice(&source[next..]);
+        let eol = if old.contains("\r\n") { "\r\n" } else { "\n" };
+        let mut text = result.join(eol);
+        if old.ends_with('\n') {
+            text.push_str(eol);
+        }
+        files.push((file.to_owned(), text));
+    }
+}
+
+/// (old start line, old line count, new line count) from `@@ -a,b +c,d @@`; a missing count is 1.
+fn hunk_range(header: &str) -> Option<(usize, usize, usize)> {
+    let mut parts = header.strip_prefix("@@ -")?.split(' ');
+    let range = |text: &str| -> Option<(usize, usize)> {
+        match text.split_once(',') {
+            Some((start, count)) => Some((start.parse().ok()?, count.parse().ok()?)),
+            None => Some((text.parse().ok()?, 1)),
+        }
+    };
+    let (start, old_count) = range(parts.next()?)?;
+    let (_, new_count) = range(parts.next()?.strip_prefix('+')?)?;
+    Some((start, old_count, new_count))
 }
 
 /// The `.cc` files a static_library lists in BUILD.gn. Reading Chromium's own list keeps the build
@@ -279,7 +324,15 @@ fn gn_sources(gn: &str, target: &str) -> Vec<String> {
 }
 
 /// Copies what a prebuilt archive holds: the library, its C header, the licenses and build facts.
-fn export(dir: &Path, manifest: &Path, chromium: &Path, out: &Path, target: &str, build: &cc::Build) {
+fn export(
+    dir: &Path,
+    manifest: &Path,
+    chromium: &Path,
+    out: &Path,
+    target: &str,
+    build: &cc::Build,
+    patches: &[(&str, Option<&str>)],
+) {
     let lib = lib_file(target);
     // Only an earlier export is replaced, so a mistyped directory is not wiped.
     let has_files = fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some());
@@ -308,8 +361,10 @@ fn export(dir: &Path, manifest: &Path, chromium: &Path, out: &Path, target: &str
     } else {
         "dynamic (/MD)"
     };
+    let patches: Vec<&str> = patches.iter().map(|(name, _)| *name).collect();
     let info = format!(
-        "target {target}\nchromium {commit}\ncompiler {compiler}\nmsvc_crt {crt}\nzucchini-sys {}\n",
+        "target {target}\nchromium {commit}\ncompiler {compiler}\nmsvc_crt {crt}\npatches {}\nzucchini-sys {}\n",
+        patches.join(" "),
         env::var("CARGO_PKG_VERSION").unwrap()
     );
     fs::write(dir.join("BUILD_INFO"), info).unwrap();

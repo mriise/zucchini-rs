@@ -1,0 +1,14 @@
+libstdc++ before GCC 15 lacks std::vector's C++23 from_range constructor. The line sits in an
+`if consteval` branch, and the iterator pair constructor copies the same elements.
+
+--- a/base/containers/span.h
++++ b/base/containers/span.h
+@@ -482,7 +482,7 @@
+     // unspecified behavior, which would halt compilation. Instead,
+     // unconditionally use a separate buffer in the constexpr context. This
+     // would be inefficient at runtime, but that's irrelevant.
+-    std::ranges::move(std::vector(std::from_range, src), dst.begin());
++    std::ranges::move(std::vector<T>(src.begin(), src.end()), dst.begin());
+   } else {
+     // Using `<=` to compare pointers to different allocations is UB;
+     // delegating to the STL is the legal workaround:

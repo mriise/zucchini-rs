@@ -1,6 +1,8 @@
 //! set_crc32 changes the CRC-32 for the whole process, so these checks run in their own test binary
 //! and in one test, in order.
 
+#![cfg(feature = "crc32-hook")]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use zucchini::{Error, apply, generate_raw, read_header, set_crc32};
