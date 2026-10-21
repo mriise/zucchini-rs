@@ -22,6 +22,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use diffy::patch_set::{FileOperation, ParseOptions, PatchSet};
+use diffy::{Line, Patch};
+
 const LIB: &str = "zucchini";
 
 /// Unified diffs in `patches/` that build.rs applies, in this order, to copies of Chromium files,
@@ -201,27 +204,26 @@ fn write_patched_files(
 }
 
 /// Applies the unified diff `patch` to `files`, (path relative to `chromium`, text) pairs, reading a
-/// file from `chromium` the first time a patch changes it. Text before the first `--- ` line is the
-/// patch's description. Hunks apply at exactly the lines they name, and every context and removed
-/// line must match (line endings aside), so a patch that no longer fits the pinned sources stops the
-/// build instead of applying somewhere else.
+/// file from `chromium` the first time a patch changes it. Text before the first file is the patch's
+/// description, and `git diff` output reads as well. Every hunk must match at exactly the line it
+/// names (line endings aside), so a patch that no longer fits the pinned sources stops the build
+/// instead of applying somewhere else.
 fn apply_patch(name: &str, patch: &str, chromium: &Path, files: &mut Vec<(String, String)>) {
     let bad = |what: String| -> ! {
         fail(&format!(
             "patches/{name}: {what}\n  The Chromium pin has moved past this patch: regenerate it against the pin."
         ))
     };
-    let lines: Vec<&str> = patch.lines().collect();
-    let mut i =
-        lines.iter().position(|line| line.starts_with("--- ")).unwrap_or_else(|| bad("holds no diff".into()));
-    while i < lines.len() {
-        let Some(file) = lines[i].strip_prefix("--- a/") else {
-            bad(format!("expected `--- a/<file>`: {}", lines[i]))
+    for file_patch in PatchSet::parse(patch, ParseOptions::unidiff()) {
+        let file_patch = file_patch.unwrap_or_else(|error| bad(error.to_string()));
+        let FileOperation::Modify { original, modified } = file_patch.operation().strip_prefix(1) else {
+            bad(format!("only changes to existing files are supported: {:?}", file_patch.operation()))
         };
-        if lines.get(i + 1) != Some(&format!("+++ b/{file}").as_str()) {
-            bad(format!("`--- a/{file}` is not followed by `+++ b/{file}`"));
+        if original != modified {
+            bad(format!("`--- a/{original}` is not followed by `+++ b/{original}`"));
         }
-        i += 2;
+        let file = original.as_ref();
+        let Some(diff) = file_patch.patch().as_text() else { bad(format!("{file}: binary diff")) };
 
         let old = match files.iter().position(|(patched, _)| patched == file) {
             Some(index) => files.remove(index).1,
@@ -231,71 +233,34 @@ fn apply_patch(name: &str, patch: &str, chromium: &Path, files: &mut Vec<(String
                     .unwrap_or_else(|error| bad(format!("cannot read {}: {error}", source.display())))
             }
         };
-        let source: Vec<&str> = old.lines().collect();
-        let mut result: Vec<&str> = Vec::with_capacity(source.len());
-        let mut next = 0;
-        while let Some(header) = lines.get(i).filter(|line| line.starts_with("@@ ")) {
-            let (start, old_count, new_count) =
-                hunk_range(header).unwrap_or_else(|| bad(format!("bad hunk header: {header}")));
-            // A hunk that removes nothing and adds lines names the line before them.
-            let start = if old_count == 0 { start } else { start.saturating_sub(1) };
-            if start < next || start > source.len() {
-                bad(format!("{file}: hunk `{header}` is out of order or past the end"));
-            }
-            result.extend_from_slice(&source[next..start]);
-            next = start;
-            i += 1;
-            let (mut old_seen, mut new_seen) = (0, 0);
-            while old_seen < old_count || new_seen < new_count {
-                let Some(&line) = lines.get(i) else { bad(format!("{file}: hunk `{header}` ends early")) };
-                let (kind, text) =
-                    if line.is_empty() { (' ', "") } else { (line.as_bytes()[0] as char, &line[1..]) };
-                match kind {
-                    ' ' | '-' => {
-                        if source.get(next) != Some(&text) {
-                            bad(format!("{file} line {}: expected `{text}`", next + 1));
-                        }
-                        next += 1;
-                        old_seen += 1;
-                        if kind == ' ' {
-                            result.push(text);
-                            new_seen += 1;
-                        }
-                    }
-                    '+' => {
-                        result.push(text);
-                        new_seen += 1;
-                    }
-                    _ => bad(format!("{file}: unexpected line in hunk `{header}`: {line}")),
-                }
-                if old_seen > old_count || new_seen > new_count {
-                    bad(format!("{file}: hunk `{header}` holds more lines than it counts"));
-                }
-                i += 1;
-            }
+        // Patches hold LF lines; a Windows checkout may hold CRLF ones.
+        let crlf = old.contains("\r\n");
+        let base = if crlf { old.replace("\r\n", "\n") } else { old };
+        // diffy looks elsewhere in the file for a hunk that does not match where it says.
+        if let Some(line) = mismatch(&base, diff) {
+            bad(format!("{file} line {line} does not match the patch"));
         }
-        result.extend_from_slice(&source[next..]);
-        let eol = if old.contains("\r\n") { "\r\n" } else { "\n" };
-        let mut text = result.join(eol);
-        if old.ends_with('\n') {
-            text.push_str(eol);
-        }
-        files.push((file.to_owned(), text));
+        let text = diffy::apply(&base, diff).unwrap_or_else(|error| bad(format!("{file}: {error}")));
+        files.push((file.to_owned(), if crlf { text.replace('\n', "\r\n") } else { text }));
     }
 }
 
-/// (old start line, old line count, new line count) from `@@ -a,b +c,d @@`; a missing count is 1.
-fn hunk_range(header: &str) -> Option<(usize, usize, usize)> {
-    let mut parts = header.strip_prefix("@@ -")?.split(' ');
-    let range = |text: &str| -> Option<(usize, usize)> {
-        match text.split_once(',') {
-            Some((start, count)) => Some((start.parse().ok()?, count.parse().ok()?)),
-            None => Some((text.parse().ok()?, 1)),
+/// The first line of `base` (1-based) where a context or removed line of `diff` differs from the
+/// line its hunk header puts it at.
+fn mismatch(base: &str, diff: &Patch<'_, str>) -> Option<usize> {
+    let lines: Vec<&str> = base.split_inclusive('\n').collect();
+    for hunk in diff.hunks() {
+        let mut at = hunk.old_range().start().saturating_sub(1);
+        for line in hunk.lines() {
+            if let Line::Context(text) | Line::Delete(text) = line {
+                if lines.get(at) != Some(text) {
+                    return Some(at + 1);
+                }
+                at += 1;
+            }
         }
-    };
-    let (start, old_count) = range(parts.next()?)?;
-    let (_, new_count) = range(parts.next()?.strip_prefix('+')?)?;
-    Some((start, old_count, new_count))
+    }
+    None
 }
 
 /// The `.cc` files a static_library lists in BUILD.gn. Reading Chromium's own list keeps the build

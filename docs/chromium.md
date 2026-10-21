@@ -42,5 +42,5 @@ The script fetches and pins the new commit; commit the submodule change with it.
 `//base` dependency, the compiler names the missing header: add it to `chromium-files.txt` when it
 is header-only and needs nothing new, otherwise write a shim. If a patch no longer applies,
 `build.rs` stops and names the file and line; make the same change against the new pin and write the
-diff with paths `a/<path>` and `b/<path>` relative to the Chromium checkout. Then run the tests once
+diff with paths `a/<path>` and `b/<path>` relative to the Chromium checkout (`git diff` there does). Then run the tests once
 more with `--features zucchini/radix-sort,zucchini/crc-fast`, which applies every patch.
