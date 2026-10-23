@@ -1,0 +1,29 @@
+Measured 2026-10-23 after local builds completed.
+Windows x64; rustc 1.98.0 (88d9e12ae 2026-08-18); clang-cl 21.1.7.
+Rust release profile; C/C++ /O2 /DNDEBUG; nine rotating rounds.
+Chromium 32586b65db724faa90b1ba1ceefc48423820a7ff.
+
+CPU: AMD Ryzen 9 7950X 16-Core Processor
+crc-fast: x86_64-avx512-vpclmulqdq
+Chromium zlib AVX-512 runtime available: 1
+CRC bytes=1024 method=Rust direct median_ms=0.000040 min_ms=0.000038 max_ms=0.000046 GiB_s=24.066 repeats=400000
+CRC bytes=1024 method=Rust callback median_ms=0.000040 min_ms=0.000038 max_ms=0.000044 GiB_s=23.905 repeats=400000
+CRC bytes=1024 method=native narrow median_ms=0.000068 min_ms=0.000064 max_ms=0.000072 GiB_s=14.105 repeats=400000
+CRC bytes=1024 method=native detected median_ms=0.000027 min_ms=0.000026 max_ms=0.000033 GiB_s=35.769 repeats=1000000
+CRC bytes=1024 method=original median_ms=0.001667 min_ms=0.001621 max_ms=0.001757 GiB_s=0.572 repeats=25000
+CRC bytes=1048576 method=Rust direct median_ms=0.014454 min_ms=0.013981 max_ms=0.015039 GiB_s=67.565 repeats=2740
+CRC bytes=1048576 method=Rust callback median_ms=0.014547 min_ms=0.013956 max_ms=0.015388 GiB_s=67.133 repeats=2837
+CRC bytes=1048576 method=native narrow median_ms=0.058259 min_ms=0.054730 max_ms=0.063499 GiB_s=16.762 repeats=789
+CRC bytes=1048576 method=native detected median_ms=0.014382 min_ms=0.013907 max_ms=0.014920 GiB_s=67.903 repeats=3101
+CRC bytes=1048576 method=original median_ms=1.780558 min_ms=1.690500 max_ms=1.915637 GiB_s=0.548 repeats=19
+CRC bytes=185597952 method=Rust direct median_ms=9.899375 min_ms=8.659000 max_ms=11.347350 GiB_s=17.461 repeats=4
+CRC bytes=185597952 method=Rust callback median_ms=10.740200 min_ms=9.157625 max_ms=12.442425 GiB_s=16.094 repeats=4
+CRC bytes=185597952 method=native narrow median_ms=15.439700 min_ms=14.311825 max_ms=16.558325 GiB_s=11.195 repeats=4
+CRC bytes=185597952 method=native detected median_ms=11.462160 min_ms=9.863160 max_ms=12.114060 GiB_s=15.080 repeats=5
+CRC bytes=185597952 method=original median_ms=338.384200 min_ms=323.153900 max_ms=342.338800 GiB_s=0.511 repeats=1
+Generating 16 MiB raw patch for apply comparison...
+Apply fixture: old=16777216 new=16777216 patch=368
+APPLY method=Rust callback median_ms=7.602367 min_ms=6.603333 max_ms=8.957167
+APPLY method=native narrow median_ms=8.666900 min_ms=7.744933 max_ms=9.389133
+APPLY method=native detected median_ms=7.864033 min_ms=6.769767 max_ms=8.912667
+APPLY method=original median_ms=66.866967 min_ms=64.354367 max_ms=69.163733

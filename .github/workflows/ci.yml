@@ -28,6 +28,7 @@ jobs:
       # Chromium's C++ is most of the build, so sccache keeps its objects in the Actions cache.
       # build.rs only lets cc apply a compiler wrapper when CXX is set.
       CXX: sccache ${{ matrix.cxx }}
+      CC: sccache ${{ matrix.cxx == 'clang-cl' && 'clang-cl' || 'clang' }}
       SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,14 +54,26 @@ jobs:
           version: v0.18.0
 
       - name: Test
-        run: cargo test --workspace --locked
+        env:
+          ZUCCHINI_SYS_EXPORT_DIR: ${{ runner.temp }}/zucchini-default
+        run: |
+          cargo test --workspace --locked
+          # New upstream changes must remain opt-in; retain only the existing build fix.
+          grep -Fx 'patches libstdcxx-span.patch' "$ZUCCHINI_SYS_EXPORT_DIR/BUILD_INFO"
 
-      # Every optional patch applied to the pinned sources, and the code behind each feature.
+      # Native CRC without the separate callback feature.
       - name: Test with the optional patches
         run: cargo test --workspace --locked --features zucchini/radix-sort,zucchini/crc-fast
+
+      - name: Test the optional CRC override with the native default
+        run: cargo test -p zucchini --locked --features radix-sort,crc-fast,crc32-hook --test crc32 --test crc32_sys
+
+      - name: Build the reproducible CRC benchmark
+        run: cargo build --release --locked --manifest-path benchmarks/crc32/Cargo.toml --target-dir target/crc32-benchmark
 
       - name: Lint
         run: |
           cargo fmt --all -- --check
+          cargo fmt --manifest-path benchmarks/crc32/Cargo.toml -- --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
-          cargo clippy --workspace --all-targets --locked --features zucchini/radix-sort,zucchini/crc-fast -- -D warnings
+          cargo clippy --workspace --all-targets --locked --features zucchini/radix-sort,zucchini/crc-fast,zucchini/crc32-hook -- -D warnings

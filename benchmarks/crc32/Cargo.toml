@@ -1,0 +1,16 @@
+[package]
+name = "crc32-benchmark"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Benchmark-only dependencies stay out of the library workspace and its lockfile.
+[workspace]
+
+[dependencies]
+crc-fast = { version = "=1.9.0", default-features = false, features = ["std"] }
+zucchini = { path = "../../zucchini", features = ["crc-fast", "crc32-hook"] }
+zucchini-sys = { path = "../../zucchini-sys", features = ["crc-fast", "crc32-hook"] }
+
+[build-dependencies]
+cc = "=1.4.6"

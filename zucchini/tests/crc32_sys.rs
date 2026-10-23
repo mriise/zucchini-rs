@@ -1,7 +1,7 @@
-//! A CRC-32 chosen through zucchini-sys directly, before the first patch, stays chosen: crc-fast is
-//! only the default. Its own test binary, since the choice is process-wide.
+//! A CRC-32 chosen through zucchini-sys overrides the compiled native default. Its own test
+//! binary, since the choice is process-wide.
 
-#![cfg(feature = "crc-fast")]
+#![cfg(all(feature = "crc-fast", feature = "crc32-hook"))]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

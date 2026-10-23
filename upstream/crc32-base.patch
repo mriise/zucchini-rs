@@ -1,0 +1,109 @@
+diff --git a/components/zucchini/crc32.cc b/components/zucchini/crc32.cc
+index 254ae80..3aae20b 100644
+--- a/components/zucchini/crc32.cc
++++ b/components/zucchini/crc32.cc
+@@ -4,37 +4,14 @@
+ 
+ #include "components/zucchini/crc32.h"
+ 
+-#include <array>
++#include "base/metrics/crc32.h"
+ 
+ namespace zucchini {
+ 
+-namespace {
+-
+-std::array<uint32_t, 256> MakeCrc32Table() {
+-  constexpr uint32_t kCrc32Poly = 0xEDB88320;
+-
+-  std::array<uint32_t, 256> crc32Table;
+-  for (uint32_t i = 0; i < 256; ++i) {
+-    uint32_t r = i;
+-    for (int j = 0; j < 8; ++j)
+-      r = (r >> 1) ^ (kCrc32Poly & ~((r & 1) - 1));
+-    crc32Table[i] = r;
+-  }
+-  return crc32Table;
+-}
+-
+-}  // namespace
+-
+-// Minimalistic CRC-32 implementation for Zucchini usage. Adapted from LZMA SDK
+-// (found at third_party/lzma_sdk/src/C/7zCrc.c), which is public domain.
+ uint32_t CalculateCrc32(base::span<const uint8_t> data) {
+-  static const std::array<uint32_t, 256> kCrc32Table = MakeCrc32Table();
+-
+-  uint32_t ret = 0xFFFFFFFF;
+-  for (uint8_t byte : data) {
+-    ret = kCrc32Table[(ret ^ byte) & 0xFF] ^ (ret >> 8);
+-  }
+-  return ret ^ 0xFFFFFFFF;
++  // base::Crc32 returns the uncomplemented state; Zucchini uses
++  // CRC-32/ISO-HDLC.
++  return ~base::Crc32(0xFFFFFFFFU, data);
+ }
+ 
+ }  // namespace zucchini
+diff --git a/components/zucchini/crc32_unittest.cc b/components/zucchini/crc32_unittest.cc
+index b0c8b64..2a965ed 100644
+--- a/components/zucchini/crc32_unittest.cc
++++ b/components/zucchini/crc32_unittest.cc
+@@ -4,9 +4,11 @@
+ 
+ #include "components/zucchini/crc32.h"
+ 
++#include <stddef.h>
+ #include <stdint.h>
+ 
+ #include <array>
++#include <vector>
+ 
+ #include "base/containers/span.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+@@ -39,4 +41,46 @@ TEST(Crc32Test, All) {
+   EXPECT_EQ(0x0762F38BU, CalculateCrc32(data.first(9u)));
+ }
+ 
++TEST(Crc32Test, EmptySpan) {
++  EXPECT_EQ(0U, CalculateCrc32({}));
++}
++
++TEST(Crc32Test, IsoHdlcCheckValue) {
++  constexpr uint8_t check[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
++  EXPECT_EQ(0xCBF43926U, CalculateCrc32(check));
++}
++
++TEST(Crc32Test, BlockBoundariesAndAlignment) {
++  std::vector<size_t> lengths = {512,  513,   4095,  4096,
++                                 4097, 65535, 65536, 65537};
++  for (size_t length = 0; length < 512; ++length) {
++    lengths.push_back(length);
++  }
++  uint32_t random = 1;
++  for (size_t length : lengths) {
++    for (size_t offset = 0; offset < 16; ++offset) {
++      // End the input at the allocation boundary so ASan detects overreads.
++      std::vector<uint8_t> data(length + offset + 1);
++      for (uint8_t& byte : data) {
++        random ^= random << 13;
++        random ^= random >> 17;
++        random ^= random << 5;
++        byte = static_cast<uint8_t>(random);
++      }
++      const auto input = base::span(data).subspan(offset + 1);
++      // Independent bit-at-a-time reference, with the same initial and final
++      // complements as CRC-32/ISO-HDLC. Every SIMD tail length is covered.
++      uint32_t expected = 0xFFFFFFFF;
++      for (size_t i = 0; i < length; ++i) {
++        expected ^= input[i];
++        for (int bit = 0; bit < 8; ++bit) {
++          expected = (expected >> 1) ^ (0xEDB88320U & (0U - (expected & 1)));
++        }
++      }
++      EXPECT_EQ(expected ^ 0xFFFFFFFF, CalculateCrc32(input))
++          << "offset=" << offset << " length=" << length;
++    }
++  }
++}
++
+ }  // namespace zucchini
