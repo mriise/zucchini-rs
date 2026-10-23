@@ -1,6 +1,7 @@
 Guard AVX-512/VPCLMUL with full CPU and OS state checks and zero the initial CRC lanes.
 The source build enables the kernel with a per-function target attribute, not global AVX flags.
-See upstream/zlib-avx512.patch for the Chromium GN integration and unit tests.
+See upstream/1-zlib-avx512-detection.patch and 2-zlib-enable-avx512.patch for the Chromium
+GN integration and unit tests.
 
 --- a/third_party/zlib/cpu_features.c
 +++ b/third_party/zlib/cpu_features.c

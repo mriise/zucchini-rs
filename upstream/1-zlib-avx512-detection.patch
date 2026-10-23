@@ -1,20 +1,62 @@
-diff --git a/third_party/zlib/BUILD.gn b/third_party/zlib/BUILD.gn
-index 29248e1..ddc6edf 100644
---- a/third_party/zlib/BUILD.gn
-+++ b/third_party/zlib/BUILD.gn
-@@ -227,6 +227,10 @@ source_set("zlib_data_chunk_simd") {
- config("zlib_crc32_simd_config") {
-   if (use_x86_x64_optimizations) {
-     defines = [ "CRC32_SIMD_SSE42_PCLMUL" ]
-+    # Keep the advanced instructions confined to the kernel's target attribute.
-+    if (is_clang) {
-+      defines += [ "CRC32_SIMD_AVX512_PCLMUL" ]
-+    }
-   }
- }
- 
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Melanie Riise <me@mriise.net>
+Date: Fri, 23 Oct 2026 05:30:14 -0700
+Subject: [PATCH 1/2] [zlib][x86] Check CPU and OS support before AVX-512
+ CRC-32
+
+When built with CRC32_SIMD_AVX512_PCLMUL (CMake ENABLE_SIMD_AVX512),
+_cpu_check_features() enables the AVX-512 CRC-32 kernel based only on
+_xgetbv(0) & 0x40. That check has three problems:
+
+- XGETBV raises #UD unless CPUID reports both XSAVE and OSXSAVE, so
+  CPUs or OSes without XSAVE support crash during feature detection.
+- CPUID is never asked for AVX-512F or VPCLMULQDQ. AVX-512 CPUs
+  without VPCLMULQDQ (e.g. Skylake-X) pass the check and then fault on
+  the first 512-bit carry-less multiply.
+- XCR0 bit 6 alone does not mean the OS saves the XMM, YMM, opmask
+  and Hi16_ZMM state the kernel relies on.
+
+Check XSAVE/OSXSAVE before XGETBV and CPUID leaf 7 availability before
+reading it. Then require SSE4.1, SSE4.2 and PCLMULQDQ (used by the
+final reduction), SSE2, AVX-512F and VPCLMULQDQ, and XCR0 state bits
+1, 2, 5, 6 and 7. The predicate is a static inline function in
+cpu_features.h so it can be unit tested without the matching CPU.
+The header gains an include guard so the test can include it.
+
+Also use _mm512_zextsi128_si512 for the initial CRC: the upper lanes
+of _mm512_castsi128_si512 are undefined, and the kernel XORs the whole
+vector into the input.
+
+The GN build does not define CRC32_SIMD_AVX512_PCLMUL, so Chromium's
+shipping configuration is unchanged.
+
+Tests: two new ZlibTest cases cover the predicate bit by bit and
+compare crc32_z against a bitwise reference for 64 alignments, vector
+boundary lengths, four seeds and split updates.
+
+Bug: TODO_FILE_CRBUG
+---
+ AUTHORS                                       |  1 +
+ .../zlib/contrib/tests/utils_unittest.cc      | 61 +++++++++++++++++++
+ third_party/zlib/cpu_features.c               | 26 +++++++-
+ third_party/zlib/cpu_features.h               | 31 ++++++++++
+ third_party/zlib/crc32_simd.c                 |  3 +-
+ 5 files changed, 120 insertions(+), 2 deletions(-)
+
+diff --git a/AUTHORS b/AUTHORS
+index 60821456..405bee29 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -1151,6 +1151,7 @@ Md. Hasanur Rashid <hasanur.r@samsung.com>
+ Md. Sadiqul Amin <sadiqul.amin@samsung.com>
+ Mego Tan <tannal2409@gmail.com>
+ Meitar Naveh <meitar@neo.ai>
++Melanie Riise <me@mriise.net>
+ Merajul Arefin <merajularefin@gmail.com>
+ Micha Hanselmann <micha.hanselmann@gmail.com>
+ Michael Chan <mzchan@dolby.com>
 diff --git a/third_party/zlib/contrib/tests/utils_unittest.cc b/third_party/zlib/contrib/tests/utils_unittest.cc
-index 148cc7c..52eaac2 100644
+index 148cc7c6..52eaac2d 100644
 --- a/third_party/zlib/contrib/tests/utils_unittest.cc
 +++ b/third_party/zlib/contrib/tests/utils_unittest.cc
 @@ -20,6 +20,7 @@
@@ -93,7 +135,7 @@ index 148cc7c..52eaac2 100644
                    const int compression_level = Z_DEFAULT_COMPRESSION) {
    std::vector<unsigned char> input;
 diff --git a/third_party/zlib/cpu_features.c b/third_party/zlib/cpu_features.c
-index 6613a65..5fa735e 100644
+index 6613a65e..5fa735e3 100644
 --- a/third_party/zlib/cpu_features.c
 +++ b/third_party/zlib/cpu_features.c
 @@ -172,6 +172,10 @@ static void _cpu_check_features(void)
@@ -144,7 +186,7 @@ index 6613a65..5fa735e 100644
  }
  #endif // x86 & NO_SIMD
 diff --git a/third_party/zlib/cpu_features.h b/third_party/zlib/cpu_features.h
-index 6092c7e..0629625 100644
+index 6092c7e8..06296254 100644
 --- a/third_party/zlib/cpu_features.h
 +++ b/third_party/zlib/cpu_features.h
 @@ -5,8 +5,37 @@
@@ -192,7 +234,7 @@ index 6092c7e..0629625 100644
 +
 +#endif /* THIRD_PARTY_ZLIB_CPU_FEATURES_H_ */
 diff --git a/third_party/zlib/crc32_simd.c b/third_party/zlib/crc32_simd.c
-index f9d52a6..69394c3 100644
+index f9d52a63..69394c36 100644
 --- a/third_party/zlib/crc32_simd.c
 +++ b/third_party/zlib/crc32_simd.c
 @@ -62,7 +62,8 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(  /* AVX512+PCLMUL */

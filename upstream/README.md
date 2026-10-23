@@ -1,58 +1,50 @@
-# Chromium CRC-32 patches
+# Chromium CRC-32 changes
 
-These patches let Chromium's Zucchini reuse its existing base/zlib CRC implementation and enable
-zlib's existing AVX-512/VPCLMUL backend. They target Chromium main at
-`b1bf9a57b7c1756033fe69cf49bde125e6603a8c`, whose Zucchini CRC API takes `base::span`.
+Three CLs against Chromium main `0ff6fbee` (2026-10-23), each a `git format-patch` file whose
+message is the CL description. They touch two OWNERS sets, so they are reviewed separately:
 
-- [`crc32-base.patch`](crc32-base.patch) replaces the byte loop with
-  `~base::Crc32(0xFFFFFFFFU, data)`. The seed and complement preserve CRC-32/ISO-HDLC, including
-  empty input. Zucchini already depends on `//base`, which already builds this wrapper and depends
-  on zlib, so upstream needs no new dependency edge or callback.
-- [`zlib-avx512.patch`](zlib-avx512.patch) enables the existing kernel on Clang x86 builds. It
-  checks XSAVE/OSXSAVE/AVX, SSE/PCLMUL, AVX-512F, VPCLMULQDQ and all required XCR0 state bits;
-  guards XGETBV and CPUID leaf 7; and explicitly zero-extends the initial vector CRC. Existing
-  SSE, ARM and software paths remain available.
+| Patch | Owners | Depends on | Change |
+|---|---|---|---|
+| [`1-zlib-avx512-detection.patch`](1-zlib-avx512-detection.patch) | `third_party/zlib` | - | Checks XSAVE/OSXSAVE, CPUID leaf 7, AVX-512F, VPCLMULQDQ and XCR0 before using the AVX-512 CRC kernel; zero-extends its initial CRC. Fixes CMake `ENABLE_SIMD_AVX512` builds; GN builds are unchanged. Adds the `AUTHORS` entry |
+| [`2-zlib-enable-avx512.patch`](2-zlib-enable-avx512.patch) | `third_party/zlib` | 1 | Defines `CRC32_SIMD_AVX512_PCLMUL` in GN. gzip decompression +8.2% geomean on Zen 4 ([data](zlib-bench-7950x.txt)) |
+| [`3-zucchini-base-crc32.patch`](3-zucchini-base-crc32.patch) | `components/zucchini` | - | `CalculateCrc32` calls `base::Crc32`. 177 MiB CRC 295 ms -> 11.2 ms with SSE alone |
 
-The local `zucchini-sys/patches/crc32-native.patch` adapts the base change to our older pinned
-raw-pointer API. Its companion zlib patch carries the CPU/OS checks and vector fix. Our standalone
-`crc-fast` build compiles the existing base wrapper and four zlib C sources into the Zucchini
-archive, using a static `BASE_EXPORT` shim. It needs neither a new Rust crate nor a full base/zlib
-build. See [benefits and benchmarks](../docs/crc32-benchmarks.md) for the comparison with the former
-Rust callback and a runnable benchmark.
+The local `zucchini-sys/patches/crc32-native.patch` and `zlib-avx512.patch` carry the same
+source changes, adapted to our older pin. See [benchmarks](../docs/crc32-benchmarks.md).
 
-Validation of the upstream patch artifacts on Windows x64 with clang-cl 21.1.7:
+## Before uploading
 
-- Both patches apply cleanly to the recorded revision.
-- Four Zucchini CRC tests and the two added zlib tests pass with detected AVX-512, forced SSE,
-  and forced software dispatch. Tests cover CPU/OS feature predicates, 64 alignments, vector
-  boundaries, four seeds and incremental updates.
-- A standalone runner passes 33,056 comparisons against an independent bitwise reference and the
-  original CRC, and all 4,097 input lengths ending immediately before an inaccessible guard page,
-  in each dispatch mode. The accelerated results also agree with Rust crc-fast 1.9.0.
+- Sign the [Individual CLA](https://cla.developers.google.com/about/google-individual) with the
+  email in `AUTHORS`. Patch 1 adds the entry; if patch 3 goes first, move the `AUTHORS` hunk there.
+- File a crbug per CL (or one for both zlib CLs) and replace `Bug: TODO_FILE_CRBUG`.
+- Follow the [AI coding policy](https://chromium.googlesource.com/chromium/src/+/main/agents/ai_policy.md):
+  understand every line, flag AI-assisted parts you are unsure of, and answer reviews yourself.
+- Patch 2 only measures AMD Zen 4. Intel AVX-512 data (Ice Lake or later) would strengthen it.
 
-These were standalone checks of the actual Chromium sources with GoogleTest 1.16.0. The full
-Chromium GN build, zlib suite and presubmit have not been run. The standalone crate's CI separately
-validates Linux x64/ARM64, macOS ARM64 and Windows x64; that does not replace Chromium presubmit.
+## Validation so far
 
-In an authenticated Chromium checkout with depot_tools, apply and validate:
+- All three apply with `git am` to `0ff6fbee`; `git diff --check` is clean.
+- The zlib sources build with clang-cl 21 and with GCC 13 (`X86_WINDOWS` and `X86_NOT_WINDOWS`) with
+  AVX-512 enabled, so patch 2 needs no `is_clang` guard.
+- Standalone GoogleTest runs of the new Zucchini and zlib tests pass with AVX-512, SSE and software
+  dispatch, plus 33,056 comparisons against a bitwise reference and guard-page overread checks.
+
+Not yet run: a GN build, `zucchini_unittests`/`zlib_unittests` in Chromium, presubmit and try bots.
+
+## Upload
+
+In a Chromium checkout with depot_tools, for each CL (patch 2 on top of patch 1 as a relation
+chain; patch 3 on its own branch):
 
 ```sh
-git apply /path/to/zucchini-rs/upstream/crc32-base.patch
-git apply /path/to/zucchini-rs/upstream/zlib-avx512.patch
+git checkout -b zlib-avx512-detection -t origin/main
+git am /path/to/zucchini-rs/upstream/1-zlib-avx512-detection.patch
 git cl format
-autoninja -C out/Default zucchini_unittests zlib_unittests
-out/Default/zucchini_unittests --gtest_filter='Crc32Test.*'
+autoninja -C out/Default zlib_unittests zucchini_unittests zlib_bench
 out/Default/zlib_unittests
-git diff --check
-git add components/zucchini/crc32.cc components/zucchini/crc32_unittest.cc
-git add third_party/zlib/BUILD.gn third_party/zlib/cpu_features.c third_party/zlib/cpu_features.h
-git add third_party/zlib/crc32_simd.c third_party/zlib/contrib/tests/utils_unittest.cc
-git commit -s
 git cl presubmit
 git cl upload
+git cl try
 ```
 
-Use `.exe` for the test binaries on Windows and configure `out/Default` first if needed. The
-[Chromium contribution guide](https://www.chromium.org/developers/contributing-code/) covers account
-setup and review. Suggested CL title: `zucchini: Reuse base CRC with zlib AVX-512 dispatch`.
-The independent zlib patch can also be reviewed separately. No Gerrit CL has been uploaded.
+Chromium does not use `Signed-off-by`; the CLA covers it. `git cl upload` adds the `Change-Id`.

@@ -1,5 +1,5 @@
 Reuse Chromium base::Crc32 and zlib runtime dispatch without a callback.
-Adapted to the pinned raw-pointer API; see upstream/crc32-base.patch.
+Adapted to the pinned raw-pointer API; see upstream/3-zucchini-base-crc32.patch.
 
 --- a/components/zucchini/crc32.cc
 +++ b/components/zucchini/crc32.cc

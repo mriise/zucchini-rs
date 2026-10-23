@@ -1,5 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Melanie Riise <me@mriise.net>
+Date: Fri, 23 Oct 2026 05:37:00 -0700
+Subject: [PATCH] zucchini: Compute CRC-32 with base::Crc32
+
+CalculateCrc32() uses a byte-at-a-time table loop. base::Crc32 wraps
+zlib's crc32_z, which dispatches to SSE4.2/PCLMUL on x86 and CRC32/PMULL
+on Arm with a portable fallback. //components/zucchini already depends
+on //base, and //base already depends on zlib, so this adds no new
+dependency.
+
+base::Crc32 takes and returns the uncomplemented state, so
+~base::Crc32(0xFFFFFFFF, data) is exactly CRC-32/ISO-HDLC, including 0
+for empty input. Patch headers and their CRC values are unchanged.
+
+Measured on an AMD Ryzen 9 7950X (Windows x64, clang-cl 21, /O2),
+Zucchini sources built outside GN, medians of 9 rounds:
+
+  CRC of 177 MiB:          295 ms -> 11.2 ms
+  CRC of 1 MiB:           1.69 ms -> 0.056 ms
+  Apply 16 MiB raw patch: 57.6 ms -> 5.56 ms
+
+Tests: new Crc32Test cases check the empty span, the standard check
+value, and every length 0..511 plus block boundaries up to 65537 at 16
+offsets against a bitwise reference. Inputs end at the allocation
+boundary so ASan catches overreads.
+
+Bug: TODO_FILE_CRBUG
+---
+ components/zucchini/crc32.cc          | 31 +++----------------
+ components/zucchini/crc32_unittest.cc | 44 +++++++++++++++++++++++++++
+ 2 files changed, 48 insertions(+), 27 deletions(-)
+
 diff --git a/components/zucchini/crc32.cc b/components/zucchini/crc32.cc
-index 254ae80..3aae20b 100644
+index 254ae802..3aae20bd 100644
 --- a/components/zucchini/crc32.cc
 +++ b/components/zucchini/crc32.cc
 @@ -4,37 +4,14 @@
@@ -45,7 +78,7 @@ index 254ae80..3aae20b 100644
  
  }  // namespace zucchini
 diff --git a/components/zucchini/crc32_unittest.cc b/components/zucchini/crc32_unittest.cc
-index b0c8b64..2a965ed 100644
+index b0c8b649..c87801bc 100644
 --- a/components/zucchini/crc32_unittest.cc
 +++ b/components/zucchini/crc32_unittest.cc
 @@ -4,9 +4,11 @@
@@ -69,8 +102,8 @@ index b0c8b64..2a965ed 100644
 +}
 +
 +TEST(Crc32Test, IsoHdlcCheckValue) {
-+  constexpr uint8_t check[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
-+  EXPECT_EQ(0xCBF43926U, CalculateCrc32(check));
++  constexpr uint8_t kCheck[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
++  EXPECT_EQ(0xCBF43926U, CalculateCrc32(kCheck));
 +}
 +
 +TEST(Crc32Test, BlockBoundariesAndAlignment) {
