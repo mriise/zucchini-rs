@@ -13,6 +13,8 @@ rust-version.workspace = true
 # Link the prebuilt, attested static library instead of compiling Chromium sources.
 prebuilt = ["zucchini-sys/prebuilt"]
 # Patches to Zucchini's sources, off by default; see zucchini-sys's features and the crate docs.
+# generate_with_progress and the apply_*_with_progress functions, which report progress and cancel.
+progress = ["zucchini-sys/progress"]
 vector-containers = ["zucchini-sys/vector-containers"]
 radix-sort = ["zucchini-sys/radix-sort"]
 # set_crc32, which chooses the whole-file CRC-32 implementation.

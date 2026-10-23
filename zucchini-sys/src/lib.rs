@@ -76,7 +76,9 @@ unsafe extern "C" {
         options: *const zucc_generate_options,
         patch_out: *mut *mut zucc_patch,
     ) -> c_int;
-    /// `zucc_generate`, reporting to `progress` (with `context`) as it goes.
+    /// `zucc_generate`, reporting to `progress` (with `context`) as it goes. Only in a library
+    /// built with the `progress` feature.
+    #[cfg(feature = "progress")]
     pub fn zucc_generate_with_progress(
         old_data: *const u8,
         old_len: usize,
@@ -99,7 +101,9 @@ unsafe extern "C" {
         new_out: *mut u8,
         new_len: usize,
     ) -> c_int;
-    /// `zucc_apply`, reporting to `progress` (with `context`) as it goes.
+    /// `zucc_apply`, reporting to `progress` (with `context`) as it goes. Only in a library built
+    /// with the `progress` feature.
+    #[cfg(feature = "progress")]
     pub fn zucc_apply_with_progress(
         old_data: *const u8,
         old_len: usize,

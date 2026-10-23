@@ -57,10 +57,10 @@ jobs:
 
       # Every optional patch applied to the pinned sources, and the code behind each feature.
       - name: Test with the optional patches
-        run: cargo test --workspace --locked --features zucchini/radix-sort,zucchini/crc-fast
+        run: cargo test --workspace --locked --features zucchini/progress,zucchini/radix-sort,zucchini/crc-fast
 
       - name: Lint
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
-          cargo clippy --workspace --all-targets --locked --features zucchini/radix-sort,zucchini/crc-fast -- -D warnings
+          cargo clippy --workspace --all-targets --locked --features zucchini/progress,zucchini/radix-sort,zucchini/crc-fast -- -D warnings

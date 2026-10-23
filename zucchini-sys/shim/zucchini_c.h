@@ -69,7 +69,9 @@ int zucc_generate(const uint8_t* old_data, size_t old_len, const uint8_t* new_da
  * throw a C++ exception. */
 typedef int (*zucc_progress_fn)(void* context, int percent);
 
-/* zucc_generate, reporting to progress (with context) as it goes. progress may be NULL. */
+/* zucc_generate, reporting to progress (with context) as it goes. progress may be NULL. Only in a
+ * library built with zucchini-sys's progress feature (ZUCCHINI_RS_PROGRESS defined); prebuilt
+ * libraries do not have it. */
 int zucc_generate_with_progress(const uint8_t* old_data, size_t old_len, const uint8_t* new_data,
                                 size_t new_len, const zucc_generate_options* options,
                                 zucc_progress_fn progress, void* context, zucc_patch** patch_out);
@@ -90,7 +92,8 @@ int zucc_read_header(const uint8_t* patch, size_t patch_len, zucc_patch_header* 
 int zucc_apply(const uint8_t* old_data, size_t old_len, const uint8_t* patch, size_t patch_len,
                uint8_t* new_out, size_t new_len);
 
-/* zucc_apply, reporting to progress (with context) as it goes. progress may be NULL. */
+/* zucc_apply, reporting to progress (with context) as it goes. progress may be NULL. Same
+ * condition as zucc_generate_with_progress. */
 int zucc_apply_with_progress(const uint8_t* old_data, size_t old_len, const uint8_t* patch,
                              size_t patch_len, uint8_t* new_out, size_t new_len,
                              zucc_progress_fn progress, void* context);

@@ -17,16 +17,17 @@
 //! because the patch header stores 32-bit sizes. Logging stays off until [`set_log_level`] turns
 //! it on.
 //!
-//! [`generate_with_progress`], [`apply_with_progress`] and [`apply_into_with_progress`] report the
-//! percentage done to a closure as they go, and stop with [`Error::Cancelled`] when it returns
-//! [`ControlFlow::Break`]. The closure runs often, so checking a flag another thread sets is a
-//! responsive way to cancel. A few steps run without calling it, such as finding the executables in
-//! each file: for a 145 MB executable, generating can take up to 5 s to stop and applying 1.5 s.
+//! Optional features, all off by default, patch Zucchini's sources to report progress or run
+//! faster. They are kept out of the default build, so that it compiles Chromium's Zucchini with only
+//! the fixes it needs to build here. They need a source build rather than `prebuilt`, and patches
+//! and results are byte-identical with or without them:
 //!
-//! Optional features, all off by default, change Zucchini's sources to make it faster. They need a
-//! source build rather than `prebuilt`, and patches and results are byte-identical with or without
-//! them:
-//!
+//! - `progress`: `generate_with_progress`, `apply_with_progress` and `apply_into_with_progress`
+//!   report the percentage done to a closure as they go, and stop with [`Error::Cancelled`] when it
+//!   returns `ControlFlow::Break`. The closure runs often, so checking a flag another thread sets
+//!   is a responsive way to cancel. A few steps run without calling it, such as finding the
+//!   executables in each file: for a 145 MB executable, generating can take up to 5 s to stop and
+//!   applying 1.5 s.
 //! - `vector-containers`: `std::vector` instead of `std::deque` for Zucchini's offset arrays, which
 //!   matters most with MSVC's standard library (about 1.1 s less of a 177 MB PE's apply).
 //! - `radix-sort` (turns on `vector-containers`): radix sorts those arrays (about 0.25 s less).
@@ -48,11 +49,8 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
-use std::any::Any;
-use std::ffi::{CStr, CString, c_int, c_void};
+use std::ffi::{CStr, CString, c_int};
 use std::fmt;
-use std::ops::ControlFlow;
-use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
 
 use zucchini_sys as sys;
@@ -61,6 +59,10 @@ use zucchini_sys as sys;
 mod crc32;
 #[cfg(feature = "crc32-hook")]
 pub use crc32::set_crc32;
+#[cfg(feature = "progress")]
+mod progress;
+#[cfg(feature = "progress")]
+pub use progress::{apply_into_with_progress, apply_with_progress, generate_with_progress};
 
 /// Largest file Zucchini diffs or produces; its patch header stores 32-bit sizes.
 pub const MAX_LEN: usize = u32::MAX as usize;
@@ -121,7 +123,7 @@ pub enum Error {
     /// Zucchini gave up, or a C++ exception other than a failed check reached the API; the message
     /// is the exception's, or empty.
     Fatal(String),
-    /// The progress closure returned [`ControlFlow::Break`].
+    /// The progress closure returned `ControlFlow::Break` (the `progress` feature).
     Cancelled,
     /// Any other Zucchini status code.
     Status(i32),
@@ -173,29 +175,20 @@ pub fn generate_raw(old: &[u8], new: &[u8]) -> Result<Vec<u8>, Error> {
 
 /// Makes a patch from `old` to `new` with explicit options.
 pub fn generate_with(old: &[u8], new: &[u8], options: &GenerateOptions) -> Result<Vec<u8>, Error> {
-    generate_inner(old, new, options, None)
+    generate_inner(old, new, options, |c_options, handle| {
+        // SAFETY: both slices outlive the call, `generate_inner` keeps `c_options` and the string
+        // it points to alive for it, and `handle` is a valid place for the result.
+        unsafe { sys::zucc_generate(old.as_ptr(), old.len(), new.as_ptr(), new.len(), c_options, handle) }
+    })
 }
 
-/// Makes a patch like [`generate_with`], calling `progress` with the percentage done as it goes.
-///
-/// `progress` runs often on this thread, with a percentage from 0 to 100 that never falls and often
-/// repeats; 100 comes only once the patch is made. Returning [`ControlFlow::Break`] stops the work
-/// with [`Error::Cancelled`]. A panic in `progress` stops it too, and resumes once Zucchini has
-/// unwound.
-pub fn generate_with_progress(
-    old: &[u8],
-    new: &[u8],
-    options: &GenerateOptions,
-    mut progress: impl FnMut(u8) -> ControlFlow<()>,
-) -> Result<Vec<u8>, Error> {
-    generate_inner(old, new, options, Some(&mut progress))
-}
-
+/// Makes a patch from `old` to `new`, with `call` running `zucc_generate` or a variant of it on the
+/// C options and the place for the patch.
 fn generate_inner(
     old: &[u8],
     new: &[u8],
     options: &GenerateOptions,
-    progress: Option<&mut dyn FnMut(u8) -> ControlFlow<()>>,
+    call: impl FnOnce(&sys::zucc_generate_options, &mut *mut sys::zucc_patch) -> c_int,
 ) -> Result<Vec<u8>, Error> {
     #[cfg(feature = "crc-fast")]
     crc32::install_default();
@@ -214,22 +207,7 @@ fn generate_inner(
     };
 
     let mut handle = ptr::null_mut();
-    status(with_progress(progress, |callback, context| {
-        // SAFETY: both slices, `c_options` and the string it points to outlive the call, `handle`
-        // is a valid place for the result, and `with_progress` keeps `context` alive for the call.
-        unsafe {
-            sys::zucc_generate_with_progress(
-                old.as_ptr(),
-                old.len(),
-                new.as_ptr(),
-                new.len(),
-                &c_options,
-                callback,
-                context,
-                &mut handle,
-            )
-        }
-    }))?;
+    status(call(&c_options, &mut handle))?;
     let patch = Patch(handle);
 
     // SAFETY: `patch` holds a live patch from zucc_generate.
@@ -271,25 +249,16 @@ pub fn apply(old: &[u8], patch: &[u8]) -> Result<Vec<u8>, Error> {
 /// old file, so [`apply`] can be made to allocate up to [`MAX_LEN`] bytes for a patch that later
 /// fails its CRC-32 check. Bounding `new_size` up front caps that work for untrusted patches.
 pub fn apply_bounded(old: &[u8], patch: &[u8], max_new: usize) -> Result<Vec<u8>, Error> {
-    apply_bounded_inner(old, patch, max_new, None)
+    apply_bounded_inner(old, patch, max_new, |new| apply_into(old, patch, new))
 }
 
-/// Applies `patch` to `old` like [`apply_bounded`] (pass [`MAX_LEN`] for [`apply`]'s bound), calling
-/// `progress` with the percentage done as [`generate_with_progress`] does.
-pub fn apply_with_progress(
-    old: &[u8],
-    patch: &[u8],
-    max_new: usize,
-    mut progress: impl FnMut(u8) -> ControlFlow<()>,
-) -> Result<Vec<u8>, Error> {
-    apply_bounded_inner(old, patch, max_new, Some(&mut progress))
-}
-
+/// Checks `patch` against `old` and `max_new` as [`apply_bounded`] does, then has `apply_into`
+/// write the new file into a buffer of the right size.
 fn apply_bounded_inner(
     old: &[u8],
     patch: &[u8],
     max_new: usize,
-    progress: Option<&mut dyn FnMut(u8) -> ControlFlow<()>>,
+    apply_into: impl FnOnce(&mut [u8]) -> Result<(), Error>,
 ) -> Result<Vec<u8>, Error> {
     let header = read_header(patch)?;
     if header.new_size as usize > max_new {
@@ -299,51 +268,30 @@ fn apply_bounded_inner(
         return Err(Error::WrongOldFile);
     }
     let mut new = zeroed(header.new_size as usize)?;
-    apply_into_inner(old, patch, &mut new, progress)?;
+    apply_into(&mut new)?;
     Ok(new)
 }
 
 /// Applies `patch` to `old`, writing the new file into `new`, which must be exactly the patch's
 /// [`PatchHeader::new_size`].
 pub fn apply_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> Result<(), Error> {
-    apply_into_inner(old, patch, new, None)
+    apply_into_inner(patch, new, |new| {
+        // SAFETY: `old` and `patch` are readable and `new` writable for their lengths.
+        unsafe {
+            sys::zucc_apply(old.as_ptr(), old.len(), patch.as_ptr(), patch.len(), new.as_mut_ptr(), new.len())
+        }
+    })
 }
 
-/// Applies `patch` to `old` like [`apply_into`], calling `progress` with the percentage done as
-/// [`generate_with_progress`] does.
-pub fn apply_into_with_progress(
-    old: &[u8],
-    patch: &[u8],
-    new: &mut [u8],
-    mut progress: impl FnMut(u8) -> ControlFlow<()>,
-) -> Result<(), Error> {
-    apply_into_inner(old, patch, new, Some(&mut progress))
-}
-
+/// Has `call` run `zucc_apply` or a variant of it into `new`, and turns its status into a result.
 fn apply_into_inner(
-    old: &[u8],
     patch: &[u8],
     new: &mut [u8],
-    progress: Option<&mut dyn FnMut(u8) -> ControlFlow<()>>,
+    call: impl FnOnce(&mut [u8]) -> c_int,
 ) -> Result<(), Error> {
     #[cfg(feature = "crc-fast")]
     crc32::install_default();
-    let code = with_progress(progress, |callback, context| {
-        // SAFETY: `old` and `patch` are readable and `new` writable for their lengths, and
-        // `with_progress` keeps `context` alive for the call.
-        unsafe {
-            sys::zucc_apply_with_progress(
-                old.as_ptr(),
-                old.len(),
-                patch.as_ptr(),
-                patch.len(),
-                new.as_mut_ptr(),
-                new.len(),
-                callback,
-                context,
-            )
-        }
-    });
+    let code = call(&mut *new);
     if code == sys::ZUCC_BUFFER_SIZE {
         let expected = read_header(patch)?.new_size as usize;
         return Err(Error::BufferSize { expected, actual: new.len() });
@@ -361,42 +309,6 @@ pub fn set_log_level(level: LogLevel) {
     };
     // SAFETY: accepts any value and only stores it.
     unsafe { sys::zucc_set_log_level(level) }
-}
-
-/// The context the C API passes back to [`report_progress`].
-struct Reporter<'a> {
-    progress: &'a mut dyn FnMut(u8) -> ControlFlow<()>,
-    panic: Option<Box<dyn Any + Send>>,
-}
-
-/// Runs `call` with the C progress callback and context that report to `progress`, or with none,
-/// and resumes a panic from `progress` once the call has returned.
-fn with_progress(
-    progress: Option<&mut dyn FnMut(u8) -> ControlFlow<()>>,
-    call: impl FnOnce(Option<sys::zucc_progress_fn>, *mut c_void) -> c_int,
-) -> c_int {
-    let Some(progress) = progress else { return call(None, ptr::null_mut()) };
-    let mut reporter = Reporter { progress, panic: None };
-    let code = call(Some(report_progress), ptr::from_mut(&mut reporter).cast());
-    if let Some(payload) = reporter.panic {
-        panic::resume_unwind(payload);
-    }
-    code
-}
-
-unsafe extern "C" fn report_progress(context: *mut c_void, percent: c_int) -> c_int {
-    // SAFETY: `with_progress` passes a `Reporter` that outlives the call making this one, and the C
-    // API calls back only on that call's thread.
-    let reporter = unsafe { &mut *context.cast::<Reporter<'_>>() };
-    // Zucchini stops at the first nonzero return, so a closure that panicked is not called again.
-    match panic::catch_unwind(AssertUnwindSafe(|| (reporter.progress)(percent as u8))) {
-        Ok(ControlFlow::Continue(())) => 0,
-        Ok(ControlFlow::Break(())) => 1,
-        Err(payload) => {
-            reporter.panic = Some(payload);
-            1
-        }
-    }
 }
 
 /// Owns a generated patch until it has been written out.

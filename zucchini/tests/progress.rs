@@ -1,5 +1,7 @@
 //! Progress reports and cancellation, on one of Chromium's executable pairs and on raw data.
 
+#![cfg(feature = "progress")]
+
 use std::ops::ControlFlow;
 use std::panic;
 use std::path::Path;
