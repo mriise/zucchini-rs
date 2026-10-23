@@ -1,14 +1,12 @@
-Renames Chromium's CalculateCrc32. The C API defines its own (shim/zucchini_c.cc), which calls
-the function zucc_set_crc32 chose, or this byte-at-a-time loop when none was.
+Rename the definition after including its public declaration, so the optional C API hook can
+override either the original loop or the native CRC implementation. Applied after crc32-native.
 
 --- a/components/zucchini/crc32.cc
 +++ b/components/zucchini/crc32.cc
-@@ -30,7 +30,7 @@
+@@ -3,3 +3,6 @@
+ // found in the LICENSE file.
  
- // Minimalistic CRC-32 implementation for Zucchini usage. Adapted from LZMA SDK
- // (found at third_party/lzma_sdk/src/C/7zCrc.c), which is public domain.
--uint32_t CalculateCrc32(const uint8_t* first, const uint8_t* last) {
-+uint32_t CalculateCrc32Builtin(const uint8_t* first, const uint8_t* last) {
-   DCHECK_GE(last, first);
- 
-   static const std::array<uint32_t, 256> kCrc32Table = MakeCrc32Table();
+ #include "components/zucchini/crc32.h"
++
++// The C API defines CalculateCrc32 and calls this when no override is installed.
++#define CalculateCrc32 CalculateCrc32Builtin

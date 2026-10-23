@@ -1,0 +1,420 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Melanie Riise <me@mriise.net>
+Date: Fri, 23 Oct 2026 14:43:32 -0700
+Subject: [PATCH 2/3] [zlib][x86] Add an AVX2 VPCLMULQDQ CRC-32 kernel
+
+VPCLMULQDQ does not require AVX-512: AMD Zen 3 and Intel client parts
+without AVX-512 (Alder Lake through Meteor Lake) have it with AVX2, and
+currently use the 128-bit SSE4.2 kernel. Add the AVX-512 kernel's
+algorithm on 256-bit registers, selected at runtime after AVX-512 and
+before SSE4.2. zlib-ng (crc32_vpclmulqdq_avx2) uses the same fold
+constants and feature checks.
+
+AMD Ryzen 9 7950X, Windows x64, clang-cl 21, GiB/s:
+
+  bytes     SSE4.2   AVX2 (this CL)   zlib-ng AVX2
+  1 KiB      17.2        31.5            26.7
+  64 KiB     18.5        37.3            36.9
+  16 MiB     16.5        31.8            32.4
+
+zlib_bench gzip decompression, snappy testdata plus a 23 MiB PE, AVX2
+only: +4.6% geomean (up to +16.9% on html). The zlib wrapper, which has
+no CRC-32, moved +0.7%. Compression is unchanged.
+
+Bug: TODO_FILE_CRBUG
+---
+ third_party/zlib/BUILD.gn                     |   5 +-
+ third_party/zlib/chromeconf.h                 |   2 +
+ .../zlib/contrib/tests/utils_unittest.cc      |  20 +-
+ third_party/zlib/cpu_features.c               |  15 +-
+ third_party/zlib/cpu_features.h               |  12 ++
+ third_party/zlib/crc32.c                      |  13 ++
+ third_party/zlib/crc32_simd.c                 | 167 +++++++++++++++++
+ third_party/zlib/crc32_simd.h                 |   6 +
+ 8 files changed, 235 insertions(+), 5 deletions(-)
+
+diff --git a/third_party/zlib/BUILD.gn b/third_party/zlib/BUILD.gn
+index 29248e1d..65074c0b 100644
+--- a/third_party/zlib/BUILD.gn
++++ b/third_party/zlib/BUILD.gn
+@@ -226,7 +226,10 @@ source_set("zlib_data_chunk_simd") {
+ 
+ config("zlib_crc32_simd_config") {
+   if (use_x86_x64_optimizations) {
+-    defines = [ "CRC32_SIMD_SSE42_PCLMUL" ]
++    defines = [
++      "CRC32_SIMD_SSE42_PCLMUL",
++      "CRC32_SIMD_AVX2_PCLMUL",
++    ]
+   }
+ }
+ 
+diff --git a/third_party/zlib/chromeconf.h b/third_party/zlib/chromeconf.h
+index e59a8996..44977f1d 100644
+--- a/third_party/zlib/chromeconf.h
++++ b/third_party/zlib/chromeconf.h
+@@ -197,6 +197,7 @@
+ /* Symbols added by crc32_simd.c */
+ #define crc32_sse42_simd_ Cr_z_crc32_sse42_simd_
+ #define crc32_avx512_simd_ Cr_z_crc32_avx512_simd_
++#define crc32_avx2_simd_ Cr_z_crc32_avx2_simd_
+ 
+ /* Symbols added by armv8_crc32 */
+ #define arm_cpu_enable_crc32 Cr_z_arm_cpu_enable_crc32
+@@ -209,6 +210,7 @@
+ #define cpu_check_features Cr_z_cpu_check_features
+ #define x86_cpu_enable_sse2 Cr_z_x86_cpu_enable_sse2
+ #define x86_cpu_enable_avx512 Cr_z_x86_cpu_enable_avx512
++#define x86_cpu_enable_avx2 Cr_z_x86_cpu_enable_avx2
+ #define riscv_cpu_enable_rvv Cr_z_riscv_cpu_enable_rvv
+ #define riscv_cpu_enable_vclmul Cr_z_riscv_cpu_enable_vclmul
+ 
+diff --git a/third_party/zlib/contrib/tests/utils_unittest.cc b/third_party/zlib/contrib/tests/utils_unittest.cc
+index 14023ac4..79ce9672 100644
+--- a/third_party/zlib/contrib/tests/utils_unittest.cc
++++ b/third_party/zlib/contrib/tests/utils_unittest.cc
+@@ -77,6 +77,23 @@ TEST(ZlibTest, Avx512CrcCpuSupport) {
+                                          kXcr0Avx512));
+ }
+ 
++TEST(ZlibTest, Avx2CrcCpuSupport) {
++  EXPECT_TRUE(x86_cpu_has_avx2_pclmul(kLeaf1Ecx, kLeaf1Edx, kAvx2,
++                                      kVpclmulqdq, kXcr0Avx));
++  // No AVX2.
++  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(kLeaf1Ecx, kLeaf1Edx, 0, kVpclmulqdq,
++                                       kXcr0Avx));
++  // AVX2 without VPCLMULQDQ, e.g. Haswell.
++  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(kLeaf1Ecx, kLeaf1Edx, kAvx2, 0,
++                                       kXcr0Avx));
++  // The OS has not enabled the YMM state.
++  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(kLeaf1Ecx, kLeaf1Edx, kAvx2,
++                                       kVpclmulqdq, 0x02));
++  // A CPUID.1 feature the kernel needs is missing (no SSE4.1).
++  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(kLeaf1Ecx & ~(1u << 19), kLeaf1Edx,
++                                       kAvx2, kVpclmulqdq, kXcr0Avx));
++}
++
+ TEST(ZlibTest, Crc32MatchesBitwiseReference) {
+   (void)crc32_z(0, Z_NULL, 0);
+   std::vector<unsigned char> bytes(4096 + 64);
+@@ -88,7 +105,8 @@ TEST(ZlibTest, Crc32MatchesBitwiseReference) {
+     byte = static_cast<unsigned char>(random);
+   }
+   for (size_t offset = 0; offset < 64; ++offset) {
+-    for (size_t length : {255u, 256u, 257u, 319u, 320u, 4095u, 4096u}) {
++    for (size_t length :
++         {127u, 128u, 129u, 160u, 255u, 256u, 257u, 319u, 320u, 4095u, 4096u}) {
+       for (uint32_t seed : {0u, 0x12345678u}) {
+         uint32_t expected = ~seed;
+         for (size_t i = 0; i < length; ++i) {
+diff --git a/third_party/zlib/cpu_features.c b/third_party/zlib/cpu_features.c
+index d04551c5..32025dc5 100644
+--- a/third_party/zlib/cpu_features.c
++++ b/third_party/zlib/cpu_features.c
+@@ -32,6 +32,7 @@ int ZLIB_INTERNAL x86_cpu_enable_sse2 = 0;
+ int ZLIB_INTERNAL x86_cpu_enable_ssse3 = 0;
+ int ZLIB_INTERNAL x86_cpu_enable_simd = 0;
+ int ZLIB_INTERNAL x86_cpu_enable_avx512 = 0;
++int ZLIB_INTERNAL x86_cpu_enable_avx2 = 0;
+ 
+ int ZLIB_INTERNAL riscv_cpu_enable_rvv = 0;
+ int ZLIB_INTERNAL riscv_cpu_enable_vclmul = 0;
+@@ -156,13 +157,14 @@ static void _cpu_check_features(void)
+ /* On x86 we simply use a instruction to check the CPU features.
+  * (i.e. CPUID).
+  */
+-#ifdef CRC32_SIMD_AVX512_PCLMUL
++#if defined(CRC32_SIMD_AVX512_PCLMUL) || defined(CRC32_SIMD_AVX2_PCLMUL)
+ #include <immintrin.h>
+ #include <xsaveintrin.h>
+ #endif
+ /* _xgetbv() below needs the xsave ISA. Annotate it here so the build does not
+  * need -mxsave. */
+-#if defined(CRC32_SIMD_AVX512_PCLMUL) && (defined(__GNUC__) || defined(__clang__))
++#if (defined(CRC32_SIMD_AVX512_PCLMUL) || defined(CRC32_SIMD_AVX2_PCLMUL)) && \
++    (defined(__GNUC__) || defined(__clang__))
+ __attribute__((__target__("xsave")))
+ #endif
+ static void _cpu_check_features(void)
+@@ -192,7 +194,7 @@ static void _cpu_check_features(void)
+                           x86_cpu_has_sse42 &&
+                           x86_cpu_has_pclmulqdq;
+ 
+-#ifdef CRC32_SIMD_AVX512_PCLMUL
++#if defined(CRC32_SIMD_AVX512_PCLMUL) || defined(CRC32_SIMD_AVX2_PCLMUL)
+     /* XGETBV needs XSAVE and OSXSAVE. */
+     if ((abcd[2] & 0x0c000000) == 0x0c000000) {
+         const uint32_t leaf1_ecx = (uint32_t)abcd[2];
+@@ -208,9 +210,16 @@ static void _cpu_check_features(void)
+ #else
+             __cpuid_count(7, 0, abcd[0], abcd[1], abcd[2], abcd[3]);
+ #endif
++#ifdef CRC32_SIMD_AVX512_PCLMUL
+             x86_cpu_enable_avx512 = x86_cpu_has_avx512_pclmul(
+                 leaf1_ecx, leaf1_edx, (uint32_t)abcd[1], (uint32_t)abcd[2],
+                 _xgetbv(0));
++#endif
++#ifdef CRC32_SIMD_AVX2_PCLMUL
++            x86_cpu_enable_avx2 = x86_cpu_has_avx2_pclmul(
++                leaf1_ecx, leaf1_edx, (uint32_t)abcd[1], (uint32_t)abcd[2],
++                _xgetbv(0));
++#endif
+         }
+     }
+ #endif
+diff --git a/third_party/zlib/cpu_features.h b/third_party/zlib/cpu_features.h
+index 20ee9690..b6d367e7 100644
+--- a/third_party/zlib/cpu_features.h
++++ b/third_party/zlib/cpu_features.h
+@@ -33,6 +33,17 @@ static inline int x86_cpu_has_avx512_pclmul(uint32_t leaf7_ebx,
+            (xcr0 & 0xe6) == 0xe6;
+ }
+ 
++/* Zen 3 and Intel client parts without AVX-512 have AVX2 VPCLMULQDQ. */
++static inline int x86_cpu_has_avx2_pclmul(uint32_t leaf1_ecx,
++                                          uint32_t leaf1_edx,
++                                          uint32_t leaf7_ebx,
++                                          uint32_t leaf7_ecx,
++                                          uint64_t xcr0) {
++    return x86_cpu_has_crc_base(leaf1_ecx, leaf1_edx) &&
++           (leaf7_ebx & (1u << 5)) && (leaf7_ecx & (1u << 10)) &&
++           (xcr0 & 0x6) == 0x6;
++}
++
+ /* TODO(cavalcantii): remove checks for x86_flags on deflate.
+  */
+ extern int arm_cpu_enable_crc32;
+@@ -41,6 +52,7 @@ extern int x86_cpu_enable_sse2;
+ extern int x86_cpu_enable_ssse3;
+ extern int x86_cpu_enable_simd;
+ extern int x86_cpu_enable_avx512;
++extern int x86_cpu_enable_avx2;
+ 
+ extern int riscv_cpu_enable_rvv;
+ extern int riscv_cpu_enable_vclmul;
+diff --git a/third_party/zlib/crc32.c b/third_party/zlib/crc32.c
+index 2ec5ab5c..bab2dc12 100644
+--- a/third_party/zlib/crc32.c
++++ b/third_party/zlib/crc32.c
+@@ -666,6 +666,19 @@ uLong ZEXPORT crc32_z(uLong crc, const unsigned char FAR *buf, z_size_t len) {
+         buf += chunk_size;
+     }
+ #endif
++#if defined(CRC32_SIMD_AVX2_PCLMUL)
++    if (x86_cpu_enable_avx2 && len >= Z_CRC32_AVX2_MINIMUM_LENGTH) {
++        /* crc32 32-byte chunks */
++        z_size_t chunk_size = len & ~Z_CRC32_AVX2_CHUNKSIZE_MASK;
++        crc = ~crc32_avx2_simd_(buf, chunk_size, ~(uint32_t)crc);
++        /* check remaining data */
++        len -= chunk_size;
++        if (!len)
++            return crc;
++        /* Fall into the default crc32 for the remaining data. */
++        buf += chunk_size;
++    }
++#endif
+ #if defined(CRC32_SIMD_SSE42_PCLMUL)
+     if (x86_cpu_enable_simd && len >= Z_CRC32_SSE42_MINIMUM_LENGTH) {
+         /* crc32 16-byte chunks */
+diff --git a/third_party/zlib/crc32_simd.c b/third_party/zlib/crc32_simd.c
+index 0e69db4e..0ee4719b 100644
+--- a/third_party/zlib/crc32_simd.c
++++ b/third_party/zlib/crc32_simd.c
+@@ -204,6 +204,173 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(  /* AVX512+PCLMUL */
+     return _mm_extract_epi32(a1, 1);
+ }
+ 
++#endif
++#if defined(CRC32_SIMD_AVX2_PCLMUL)
++
++/*
++ * crc32_avx2_simd_(): the AVX-512 algorithm above on 256-bit registers. The
++ * buffer length must be at least 128, and a multiple of 32.
++ */
++
++#include <emmintrin.h>
++#include <smmintrin.h>
++#include <wmmintrin.h>
++#include <immintrin.h>
++
++#if defined(__GNUC__) || defined(__clang__)
++__attribute__((__target__("avx2,pclmul,vpclmulqdq")))
++#endif
++uint32_t ZLIB_INTERNAL crc32_avx2_simd_(  /* AVX2+PCLMUL */
++    const unsigned char *buf,
++    z_size_t len,
++    uint32_t crc)
++{
++    /*
++     * k1 = ( x ^ ( 256 * 4 + 32 ) mod P(x) << 32 )' << 1 = 0x01e88ef372
++     * k2 = ( x ^ ( 256 * 4 - 32 ) mod P(x) << 32 )' << 1 = 0x014a7fe880
++     * k3 = ( x ^ ( 256 + 32 ) mod P(x) << 32 )' << 1 = 0x00f1da05aa
++     * k4 = ( x ^ ( 256 - 32 ) mod P(x) << 32 )' << 1 = 0x015a546366
++     */
++    static const uint64_t zalign(32) k1k2[] = { 0x01e88ef372, 0x014a7fe880,
++                                                0x01e88ef372, 0x014a7fe880 };
++    static const uint64_t zalign(32) k3k4[] = { 0x00f1da05aa, 0x015a546366,
++                                                0x00f1da05aa, 0x015a546366 };
++    static const uint64_t zalign(16) k5k6[] = { 0x01751997d0, 0x00ccaa009e };
++    static const uint64_t zalign(16) k7k8[] = { 0x0163cd6124, 0x0000000000 };
++    static const uint64_t zalign(16) poly[] = { 0x01db710641, 0x01f7011641 };
++    __m256i x0, x1, x2, x3, x4, x5, x6, x7, x8, y5, y6, y7, y8;
++    __m128i a0, a1, a2, a3;
++
++    /*
++     * There's at least one block of 128.
++     */
++    x1 = _mm256_loadu_si256((__m256i *)(buf + 0x00));
++    x2 = _mm256_loadu_si256((__m256i *)(buf + 0x20));
++    x3 = _mm256_loadu_si256((__m256i *)(buf + 0x40));
++    x4 = _mm256_loadu_si256((__m256i *)(buf + 0x60));
++
++    x1 = _mm256_xor_si256(x1, _mm256_inserti128_si256(_mm256_setzero_si256(),
++        _mm_cvtsi32_si128(crc), 0));
++
++    x0 = _mm256_load_si256((__m256i *)k1k2);
++
++    buf += 128;
++    len -= 128;
++
++    /*
++     * Parallel fold blocks of 128, if any.
++     */
++    while (len >= 128)
++    {
++        x5 = _mm256_clmulepi64_epi128(x1, x0, 0x00);
++        x6 = _mm256_clmulepi64_epi128(x2, x0, 0x00);
++        x7 = _mm256_clmulepi64_epi128(x3, x0, 0x00);
++        x8 = _mm256_clmulepi64_epi128(x4, x0, 0x00);
++
++        x1 = _mm256_clmulepi64_epi128(x1, x0, 0x11);
++        x2 = _mm256_clmulepi64_epi128(x2, x0, 0x11);
++        x3 = _mm256_clmulepi64_epi128(x3, x0, 0x11);
++        x4 = _mm256_clmulepi64_epi128(x4, x0, 0x11);
++
++        y5 = _mm256_loadu_si256((__m256i *)(buf + 0x00));
++        y6 = _mm256_loadu_si256((__m256i *)(buf + 0x20));
++        y7 = _mm256_loadu_si256((__m256i *)(buf + 0x40));
++        y8 = _mm256_loadu_si256((__m256i *)(buf + 0x60));
++
++        x1 = _mm256_xor_si256(x1, x5);
++        x2 = _mm256_xor_si256(x2, x6);
++        x3 = _mm256_xor_si256(x3, x7);
++        x4 = _mm256_xor_si256(x4, x8);
++
++        x1 = _mm256_xor_si256(x1, y5);
++        x2 = _mm256_xor_si256(x2, y6);
++        x3 = _mm256_xor_si256(x3, y7);
++        x4 = _mm256_xor_si256(x4, y8);
++
++        buf += 128;
++        len -= 128;
++    }
++
++    /*
++     * Fold into 256-bits.
++     */
++    x0 = _mm256_load_si256((__m256i *)k3k4);
++
++    x5 = _mm256_clmulepi64_epi128(x1, x0, 0x00);
++    x1 = _mm256_clmulepi64_epi128(x1, x0, 0x11);
++    x1 = _mm256_xor_si256(x1, x2);
++    x1 = _mm256_xor_si256(x1, x5);
++
++    x5 = _mm256_clmulepi64_epi128(x1, x0, 0x00);
++    x1 = _mm256_clmulepi64_epi128(x1, x0, 0x11);
++    x1 = _mm256_xor_si256(x1, x3);
++    x1 = _mm256_xor_si256(x1, x5);
++
++    x5 = _mm256_clmulepi64_epi128(x1, x0, 0x00);
++    x1 = _mm256_clmulepi64_epi128(x1, x0, 0x11);
++    x1 = _mm256_xor_si256(x1, x4);
++    x1 = _mm256_xor_si256(x1, x5);
++
++    /*
++     * Single fold blocks of 32, if any.
++     */
++    while (len >= 32)
++    {
++        x2 = _mm256_loadu_si256((__m256i *)buf);
++
++        x5 = _mm256_clmulepi64_epi128(x1, x0, 0x00);
++        x1 = _mm256_clmulepi64_epi128(x1, x0, 0x11);
++        x1 = _mm256_xor_si256(x1, x2);
++        x1 = _mm256_xor_si256(x1, x5);
++
++        buf += 32;
++        len -= 32;
++    }
++
++    /*
++     * Fold 256-bits to 128-bits.
++     */
++    a0 = _mm_load_si128((__m128i *)k5k6);
++
++    a1 = _mm256_extracti128_si256(x1, 0);
++    a2 = _mm256_extracti128_si256(x1, 1);
++
++    a3 = _mm_clmulepi64_si128(a1, a0, 0x00);
++    a1 = _mm_clmulepi64_si128(a1, a0, 0x11);
++    a1 = _mm_xor_si128(a1, a3);
++    a1 = _mm_xor_si128(a1, a2);
++
++    /*
++     * Fold 128-bits to 64-bits.
++     */
++    a2 = _mm_clmulepi64_si128(a1, a0, 0x10);
++    a3 = _mm_setr_epi32(~0, 0, ~0, 0);
++    a1 = _mm_srli_si128(a1, 8);
++    a1 = _mm_xor_si128(a1, a2);
++
++    a0 = _mm_loadl_epi64((__m128i*)k7k8);
++    a2 = _mm_srli_si128(a1, 4);
++    a1 = _mm_and_si128(a1, a3);
++    a1 = _mm_clmulepi64_si128(a1, a0, 0x00);
++    a1 = _mm_xor_si128(a1, a2);
++
++    /*
++     * Barret reduce to 32-bits.
++     */
++    a0 = _mm_load_si128((__m128i*)poly);
++
++    a2 = _mm_and_si128(a1, a3);
++    a2 = _mm_clmulepi64_si128(a2, a0, 0x10);
++    a2 = _mm_and_si128(a2, a3);
++    a2 = _mm_clmulepi64_si128(a2, a0, 0x00);
++    a1 = _mm_xor_si128(a1, a2);
++
++    /*
++     * Return the crc32.
++     */
++    return _mm_extract_epi32(a1, 1);
++}
++
+ #endif
+ #if defined(CRC32_SIMD_SSE42_PCLMUL)
+ 
+diff --git a/third_party/zlib/crc32_simd.h b/third_party/zlib/crc32_simd.h
+index 84624647..5d396b10 100644
+--- a/third_party/zlib/crc32_simd.h
++++ b/third_party/zlib/crc32_simd.h
+@@ -23,6 +23,10 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(const unsigned char* buf,
+                                           z_size_t len,
+                                           uint32_t crc);
+ 
++uint32_t ZLIB_INTERNAL crc32_avx2_simd_(const unsigned char* buf,
++                                        z_size_t len,
++                                        uint32_t crc);
++
+ /*
+  * crc32_sse42_simd_ buffer size constraints: see the use in zlib/crc32.c
+  * for computing the crc32 of an arbitrary length buffer.
+@@ -31,6 +35,8 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(const unsigned char* buf,
+ #define Z_CRC32_SSE42_CHUNKSIZE_MASK 15
+ #define Z_CRC32_AVX512_MINIMUM_LENGTH 256
+ #define Z_CRC32_AVX512_CHUNKSIZE_MASK 63
++#define Z_CRC32_AVX2_MINIMUM_LENGTH 128
++#define Z_CRC32_AVX2_CHUNKSIZE_MASK 31
+ 
+ /*
+  * CRC32 checksums using ARMv8-a crypto instructions.

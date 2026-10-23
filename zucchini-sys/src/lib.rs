@@ -83,8 +83,9 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn zucc_last_error() -> *const c_char;
     pub fn zucc_set_log_level(level: c_int);
-    /// Replaces the whole-file CRC-32 for the process; `None` restores the built-in table loop.
+    /// Replaces the whole-file CRC-32 for the process.
     /// The function must match zlib's `crc32` and be safe to call from several threads at once.
+    /// `None` restores the compiled default: base/zlib with `crc-fast`, otherwise the byte loop.
     /// Only in a library built with the `crc32-hook` feature.
     #[cfg(feature = "crc32-hook")]
     pub fn zucc_set_crc32(crc32: Option<zucc_crc32_fn>);

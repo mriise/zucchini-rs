@@ -36,6 +36,8 @@ const PATCHES: &[(&str, Option<&str>)] = &[
     ("vector-containers.patch", Some("vector-containers")),
     // Written against the vector-containers result; the feature turns that one on too.
     ("radix-sort.patch", Some("radix-sort")),
+    ("crc32-native.patch", Some("crc-fast")),
+    ("zlib-vpclmul.patch", Some("crc-fast")),
     ("crc32-hook.patch", Some("crc32-hook")),
 ];
 
@@ -75,7 +77,9 @@ fn main() {
     if !env_flag("ZUCCHINI_SYS_FROM_SOURCE") {
         // Prebuilt archives are built without the optional patches: linking one would quietly drop
         // a speed-up, or fail to link zucc_set_crc32.
-        let features: Vec<&str> = enabled_patches().into_iter().filter_map(|(_, feature)| feature).collect();
+        let mut features: Vec<&str> =
+            enabled_patches().into_iter().filter_map(|(_, feature)| feature).collect();
+        features.dedup();
         if !features.is_empty() {
             let features = features.join("`, `");
             fail(&format!(
@@ -154,15 +158,72 @@ fn build_from_source(manifest: &Path, out: &Path, target: &str) {
     if !cxx_vars(target).iter().any(|var| env::var_os(var).is_some()) {
         build.compiler(if msvc { "clang-cl" } else { "clang++" });
     }
+    if env::var_os("CARGO_FEATURE_CRC_FAST").is_some() {
+        build.file(chromium.join("base/metrics/crc32.cc"));
+        // Include the C objects in the same archive, including exports for downstream C users.
+        build.objects(build_crc32(&chromium, &patched, target));
+    }
     build.compile(LIB);
 
-    for path in [shim, manifest.join("patches"), component, chromium.join("base"), chromium.join("build")] {
+    for path in [
+        shim,
+        manifest.join("patches"),
+        component,
+        chromium.join("base"),
+        chromium.join("build"),
+        chromium.join("third_party/zlib"),
+    ] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
 
     if let Some(dir) = env::var_os("ZUCCHINI_SYS_EXPORT_DIR") {
         export(Path::new(&dir), manifest, &chromium, out, target, &build, &patches);
     }
+}
+
+/// Build only zlib's CRC sources as C, keeping ISA extensions in their target-attributed kernels.
+/// No global AVX/CRC flags are needed, so the resulting archive runs on baseline CPUs as well.
+fn build_crc32(chromium: &Path, patched: &Path, target: &str) -> Vec<PathBuf> {
+    let mut build = cc::Build::new();
+    build
+        .warnings(false)
+        .opt_level(2)
+        .define("NDEBUG", None)
+        .include(patched.join("third_party/zlib"))
+        .include(chromium.join("third_party/zlib"));
+    if !compiler_vars("CC", target).iter().any(|var| env::var_os(var).is_some()) {
+        build.compiler(if target.contains("msvc") { "clang-cl" } else { "clang" });
+    }
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    if arch == "x86" || arch == "x86_64" {
+        build.define("CRC32_SIMD_SSE42_PCLMUL", None);
+        build.define("CRC32_SIMD_AVX512_PCLMUL", None);
+        build.define("CRC32_SIMD_AVX2_PCLMUL", None);
+        // cpu_features.c uses this define to include the non-MSVC CPUID intrinsics.
+        build.define("ADLER32_SIMD_SSSE3", None);
+        build.define(if os == "windows" { "X86_WINDOWS" } else { "X86_NOT_WINDOWS" }, None);
+    } else if arch == "aarch64" && matches!(os.as_str(), "linux" | "macos" | "ios" | "windows") {
+        build.define("CRC32_ARMV8_CRC32", None);
+        build.define(
+            match os.as_str() {
+                "linux" => "ARMV8_OS_LINUX",
+                "macos" => "ARMV8_OS_MACOS",
+                "ios" => "ARMV8_OS_IOS",
+                _ => "ARMV8_OS_WINDOWS",
+            },
+            None,
+        );
+    } else {
+        // Other architectures/OSes need no extra CPU-detection dependencies.
+        build.define("CPU_NO_SIMD", None);
+    }
+    for name in ["crc32.c", "crc32_simd.c", "crc_folding.c", "cpu_features.c"] {
+        let relative = Path::new("third_party/zlib").join(name);
+        let copy = patched.join(&relative);
+        build.file(if copy.exists() { copy } else { chromium.join(relative) });
+    }
+    build.compile_intermediates()
 }
 
 /// The PATCHES entries this build applies: those without a feature, and those whose feature is on.
@@ -311,6 +372,9 @@ fn export(
     copy(&out.join(&lib), &dir.join("lib").join(&lib));
     copy(&manifest.join("shim/zucchini_c.h"), &dir.join("include/zucchini_c.h"));
     copy(&chromium.join("LICENSE"), &dir.join("LICENSE.chromium"));
+    if env::var_os("CARGO_FEATURE_CRC_FAST").is_some() {
+        copy(&chromium.join("third_party/zlib/LICENSE"), &dir.join("LICENSE.zlib"));
+    }
     let ours = manifest.join("../LICENSE");
     if ours.exists() {
         copy(&ours, &dir.join("LICENSE"));
@@ -355,11 +419,15 @@ fn link(dir: &Path, target: &str) {
 
 /// The variables cc reads to choose a C++ compiler for `target`.
 fn cxx_vars(target: &str) -> [String; 4] {
+    compiler_vars("CXX", target)
+}
+
+fn compiler_vars(kind: &str, target: &str) -> [String; 4] {
     [
-        format!("CXX_{target}"),
-        format!("CXX_{}", target.replace('-', "_")),
-        "TARGET_CXX".to_owned(),
-        "CXX".to_owned(),
+        format!("{kind}_{target}"),
+        format!("{kind}_{}", target.replace('-', "_")),
+        format!("TARGET_{kind}"),
+        kind.to_owned(),
     ]
 }
 

@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Melanie Riise <me@mriise.net>
+Date: Fri, 23 Oct 2026 06:25:12 -0700
+Subject: [PATCH] zucchini: Compute CRC-32 with base::Crc32
+
+CalculateCrc32() uses a byte-at-a-time table. base::Crc32 wraps zlib's
+crc32_z, which uses SSE4.2/PCLMUL or Arm CRC32/PMULL when available.
+//components/zucchini already depends on //base, which depends on zlib.
+Results are unchanged.
+
+AMD Ryzen 9 7950X, Windows x64, clang-cl 21:
+
+  CRC of 177 MiB:          295 ms -> 11.2 ms
+  Apply 16 MiB raw patch: 57.6 ms -> 5.56 ms
+
+Bug: TODO_FILE_CRBUG
+---
+ components/zucchini/crc32.cc | 30 +++---------------------------
+ 1 file changed, 3 insertions(+), 27 deletions(-)
+
+diff --git a/components/zucchini/crc32.cc b/components/zucchini/crc32.cc
+index 254ae802..d181eb9d 100644
+--- a/components/zucchini/crc32.cc
++++ b/components/zucchini/crc32.cc
+@@ -4,37 +4,13 @@
+ 
+ #include "components/zucchini/crc32.h"
+ 
+-#include <array>
++#include "base/metrics/crc32.h"
+ 
+ namespace zucchini {
+ 
+-namespace {
+-
+-std::array<uint32_t, 256> MakeCrc32Table() {
+-  constexpr uint32_t kCrc32Poly = 0xEDB88320;
+-
+-  std::array<uint32_t, 256> crc32Table;
+-  for (uint32_t i = 0; i < 256; ++i) {
+-    uint32_t r = i;
+-    for (int j = 0; j < 8; ++j)
+-      r = (r >> 1) ^ (kCrc32Poly & ~((r & 1) - 1));
+-    crc32Table[i] = r;
+-  }
+-  return crc32Table;
+-}
+-
+-}  // namespace
+-
+-// Minimalistic CRC-32 implementation for Zucchini usage. Adapted from LZMA SDK
+-// (found at third_party/lzma_sdk/src/C/7zCrc.c), which is public domain.
+ uint32_t CalculateCrc32(base::span<const uint8_t> data) {
+-  static const std::array<uint32_t, 256> kCrc32Table = MakeCrc32Table();
+-
+-  uint32_t ret = 0xFFFFFFFF;
+-  for (uint8_t byte : data) {
+-    ret = kCrc32Table[(ret ^ byte) & 0xFF] ^ (ret >> 8);
+-  }
+-  return ret ^ 0xFFFFFFFF;
++  // base::Crc32() takes and returns the uninverted state.
++  return ~base::Crc32(0xFFFFFFFF, data);
+ }
+ 
+ }  // namespace zucchini

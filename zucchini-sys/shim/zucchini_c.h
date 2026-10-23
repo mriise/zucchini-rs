@@ -88,8 +88,9 @@ void zucc_set_log_level(int level);
 /* The CRC-32 of len bytes at data, as zlib's crc32 computes it (CRC-32/ISO-HDLC). */
 typedef uint32_t (*zucc_crc32_fn)(const uint8_t* data, size_t len);
 
-/* Replaces the CRC-32 that generating and applying compute over whole files, by default a
- * byte-at-a-time table loop, with fn; NULL restores that loop. Applies to the whole process,
+/* Replaces the CRC-32 that generating and applying compute over whole files with fn; NULL
+ * restores the compiled default (base/zlib with crc-fast, otherwise the byte-at-a-time loop).
+ * Applies to the whole process,
  * including calls already running on other threads, so fn must return what the loop does and be
  * safe to call from several threads at once. Only in a library built with zucchini-sys's
  * crc32-hook feature (ZUCCHINI_RS_CRC32_HOOK defined); prebuilt libraries do not have it. */

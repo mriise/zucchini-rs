@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Melanie Riise <me@mriise.net>
+Date: Fri, 23 Oct 2026 14:44:08 -0700
+Subject: [PATCH 3/3] [zlib][x86] Enable AVX-512 CRC-32 in the GN build
+
+The AVX-512 VPCLMULQDQ kernel (https://crrev.com/c/4374529) is only
+built by CMake. With the parent CLs it is selected at runtime only when
+the CPU and OS support it, and is compiled through its target attribute.
+
+AMD Ryzen 9 7950X: CRC-32 alone runs at 74 GiB/s vs 37 GiB/s for AVX2
+at 64 KiB. zlib_bench gzip decompression gains +2.9% geomean over AVX2,
+within noise (the zlib wrapper, which has no CRC-32, moved +2.1%), and
++7.7% over SSE4.2. Intel CPUs, where 512-bit instructions may lower
+clocks, have not been measured.
+
+Bug: TODO_FILE_CRBUG
+---
+ third_party/zlib/BUILD.gn | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/third_party/zlib/BUILD.gn b/third_party/zlib/BUILD.gn
+index 65074c0b..99a5e6f0 100644
+--- a/third_party/zlib/BUILD.gn
++++ b/third_party/zlib/BUILD.gn
+@@ -229,6 +229,7 @@ config("zlib_crc32_simd_config") {
+     defines = [
+       "CRC32_SIMD_SSE42_PCLMUL",
+       "CRC32_SIMD_AVX2_PCLMUL",
++      "CRC32_SIMD_AVX512_PCLMUL",
+     ]
+   }
+ }

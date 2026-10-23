@@ -1,0 +1,50 @@
+Reuse Chromium base::Crc32 and zlib runtime dispatch; see upstream/4-zucchini-base-crc32.patch.
+
+--- a/components/zucchini/crc32.cc
++++ b/components/zucchini/crc32.cc
+@@ -4,42 +4,15 @@
+ 
+ #include "components/zucchini/crc32.h"
+ 
+-#include <array>
+-
+ #include "base/check_op.h"
+-#include "base/compiler_specific.h"
++#include "base/metrics/crc32.h"
+ 
+ namespace zucchini {
+ 
+-namespace {
+-
+-std::array<uint32_t, 256> MakeCrc32Table() {
+-  constexpr uint32_t kCrc32Poly = 0xEDB88320;
+-
+-  std::array<uint32_t, 256> crc32Table;
+-  for (uint32_t i = 0; i < 256; ++i) {
+-    uint32_t r = i;
+-    for (int j = 0; j < 8; ++j)
+-      r = (r >> 1) ^ (kCrc32Poly & ~((r & 1) - 1));
+-    crc32Table[i] = r;
+-  }
+-  return crc32Table;
+-}
+-
+-}  // namespace
+-
+-// Minimalistic CRC-32 implementation for Zucchini usage. Adapted from LZMA SDK
+-// (found at third_party/lzma_sdk/src/C/7zCrc.c), which is public domain.
+ uint32_t CalculateCrc32(const uint8_t* first, const uint8_t* last) {
+   DCHECK_GE(last, first);
+-
+-  static const std::array<uint32_t, 256> kCrc32Table = MakeCrc32Table();
+-
+-  uint32_t ret = 0xFFFFFFFF;
+-  for (; first != last; UNSAFE_TODO(++first)) {
+-    ret = kCrc32Table[(ret ^ *first) & 0xFF] ^ (ret >> 8);
+-  }
+-  return ret ^ 0xFFFFFFFF;
++  // base::Crc32() takes and returns the uninverted state.
++  return ~base::Crc32(0xFFFFFFFF, base::span(first, last));
+ }
+ 
+ }  // namespace zucchini

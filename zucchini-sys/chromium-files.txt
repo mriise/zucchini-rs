@@ -20,9 +20,27 @@
 /base/numerics/*.h
 /base/strings/string_view_util.h
 /base/types/to_address.h
+/base/metrics/crc32.h
+/base/metrics/crc32.cc
 /base/allocator/partition_allocator/src/partition_alloc/bounds_checks.h
 /base/allocator/partition_allocator/src/partition_alloc/build_config.h
 /base/allocator/partition_allocator/src/partition_alloc/buildflag.h
 /base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/compiler_specific.h
 /base/allocator/partition_allocator/src/partition_alloc/partition_alloc_base/component_export.h
 /base/allocator/partition_allocator/src/partition_alloc/pointers/raw_ptr_exclusion.h
+
+# CRC-only subset of Chromium's zlib, compiled by the optional crc-fast feature.
+/third_party/zlib/LICENSE
+/third_party/zlib/README.chromium
+/third_party/zlib/crc32.c
+/third_party/zlib/crc32.h
+/third_party/zlib/crc32_simd.c
+/third_party/zlib/crc32_simd.h
+/third_party/zlib/crc_folding.c
+/third_party/zlib/cpu_features.c
+/third_party/zlib/cpu_features.h
+/third_party/zlib/deflate.h
+/third_party/zlib/zutil.h
+/third_party/zlib/zlib.h
+/third_party/zlib/zconf.h
+/third_party/zlib/chromeconf.h

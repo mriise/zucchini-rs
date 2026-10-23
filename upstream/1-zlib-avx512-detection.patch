@@ -1,0 +1,229 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Melanie Riise <me@mriise.net>
+Date: Fri, 23 Oct 2026 14:42:52 -0700
+Subject: [PATCH 1/3] [zlib][x86] Check CPU and OS support before AVX-512
+ CRC-32
+
+With CRC32_SIMD_AVX512_PCLMUL (CMake ENABLE_SIMD_AVX512), the AVX-512
+CRC-32 kernel is enabled by _xgetbv(0) & 0x40 alone:
+
+- XGETBV faults unless the CPU has XSAVE and the OS enabled OSXSAVE.
+- CPUID is never checked for AVX-512F or VPCLMULQDQ, so AVX-512 CPUs
+  without VPCLMULQDQ (e.g. Skylake-X) fault in the kernel.
+- XCR0 bit 6 alone does not mean the XMM, YMM and opmask state is
+  enabled.
+
+Check XSAVE/OSXSAVE before XGETBV and the maximum CPUID leaf before
+leaf 7, then AVX-512F, VPCLMULQDQ and XCR0 0xe6, plus the SSE2, PCLMULQDQ,
+SSE4.1 and AVX bits the kernel itself uses, instead of relying on
+x86_cpu_enable_simd to imply them.
+
+Also zero the upper lanes of the initial CRC vector. Those of
+_mm512_castsi128_si512 are undefined: an unoptimized clang build
+computed wrong CRCs whenever the registers held stale data. Use
+_mm512_inserti32x4 with zero rather than _mm512_zextsi128_si512, which
+GCC before 10 lacks.
+
+GN builds do not define CRC32_SIMD_AVX512_PCLMUL and are unchanged.
+Tested on AMD Zen 4 (AVX-512 with VPCLMULQDQ).
+
+Bug: TODO_FILE_CRBUG
+---
+ AUTHORS                                       |  1 +
+ .../zlib/contrib/tests/utils_unittest.cc      | 76 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ third_party/zlib/cpu_features.c               | 21 ++++++++++++++++++++-
+ third_party/zlib/cpu_features.h               | 26 ++++++++++++++++++++++++++
+ third_party/zlib/crc32_simd.c                 |  3 ++-
+ 5 files changed, 125 insertions(+), 2 deletions(-)
+
+diff --git a/AUTHORS b/AUTHORS
+index 60821456..405bee29 100644
+--- a/AUTHORS
++++ b/AUTHORS
+@@ -1151,6 +1151,7 @@ Md. Hasanur Rashid <hasanur.r@samsung.com>
+ Md. Sadiqul Amin <sadiqul.amin@samsung.com>
+ Mego Tan <tannal2409@gmail.com>
+ Meitar Naveh <meitar@neo.ai>
++Melanie Riise <me@mriise.net>
+ Merajul Arefin <merajularefin@gmail.com>
+ Micha Hanselmann <micha.hanselmann@gmail.com>
+ Michael Chan <mzchan@dolby.com>
+diff --git a/third_party/zlib/contrib/tests/utils_unittest.cc b/third_party/zlib/contrib/tests/utils_unittest.cc
+index 148cc7c6..14023ac4 100644
+--- a/third_party/zlib/contrib/tests/utils_unittest.cc
++++ b/third_party/zlib/contrib/tests/utils_unittest.cc
+@@ -20,6 +20,7 @@
+ #endif
+ 
+ #include "compare256.h"
++#include "cpu_features.h"
+ #include "zlib.h"
+ 
+ // Some tests are for little endian optimizations and should be skipped if
+@@ -30,6 +31,81 @@
+ #define ZLIB_TEST_LITTLE_ENDIAN 0
+ #endif
+ 
++namespace {
++
++// CPUID.1 ECX: PCLMULQDQ, SSE4.1, XSAVE, OSXSAVE and AVX.
++constexpr uint32_t kLeaf1Ecx = (1u << 1) | (1u << 19) | (1u << 26) |
++                               (1u << 27) | (1u << 28);
++// CPUID.1 EDX: SSE2.
++constexpr uint32_t kLeaf1Edx = 1u << 26;
++// CPUID.7 EBX: AVX2 and AVX-512F. CPUID.7 ECX: VPCLMULQDQ.
++constexpr uint32_t kAvx2 = 1u << 5;
++constexpr uint32_t kAvx512f = 1u << 16;
++constexpr uint32_t kVpclmulqdq = 1u << 10;
++// XCR0: XMM and YMM state; plus opmask and ZMM state.
++constexpr uint64_t kXcr0Avx = 0x06;
++constexpr uint64_t kXcr0Avx512 = 0xe6;
++
++}  // namespace
++
++TEST(ZlibTest, CrcBaseCpuSupport) {
++  EXPECT_TRUE(x86_cpu_has_crc_base(kLeaf1Ecx, kLeaf1Edx));
++  // Each CPUID.1 ECX bit, one at a time.
++  for (int bit : {1, 19, 26, 27, 28}) {
++    EXPECT_FALSE(x86_cpu_has_crc_base(kLeaf1Ecx & ~(1u << bit), kLeaf1Edx))
++        << "ECX bit " << bit;
++  }
++  // No SSE2.
++  EXPECT_FALSE(x86_cpu_has_crc_base(kLeaf1Ecx, 0));
++}
++
++TEST(ZlibTest, Avx512CrcCpuSupport) {
++  EXPECT_TRUE(x86_cpu_has_avx512_pclmul(kLeaf1Ecx, kLeaf1Edx, kAvx512f,
++                                        kVpclmulqdq, kXcr0Avx512));
++  // No AVX-512F.
++  EXPECT_FALSE(x86_cpu_has_avx512_pclmul(kLeaf1Ecx, kLeaf1Edx, 0, kVpclmulqdq,
++                                         kXcr0Avx512));
++  // AVX-512F without VPCLMULQDQ, e.g. Skylake-X.
++  EXPECT_FALSE(x86_cpu_has_avx512_pclmul(kLeaf1Ecx, kLeaf1Edx, kAvx512f, 0,
++                                         kXcr0Avx512));
++  // The OS has not enabled the opmask and ZMM state.
++  EXPECT_FALSE(x86_cpu_has_avx512_pclmul(kLeaf1Ecx, kLeaf1Edx, kAvx512f,
++                                         kVpclmulqdq, kXcr0Avx));
++  // A CPUID.1 feature the kernel needs is missing (no AVX).
++  EXPECT_FALSE(x86_cpu_has_avx512_pclmul(kLeaf1Ecx & ~(1u << 28), kLeaf1Edx,
++                                         kAvx512f, kVpclmulqdq,
++                                         kXcr0Avx512));
++}
++
++TEST(ZlibTest, Crc32MatchesBitwiseReference) {
++  (void)crc32_z(0, Z_NULL, 0);
++  std::vector<unsigned char> bytes(4096 + 64);
++  uint32_t random = 1;
++  for (auto& byte : bytes) {
++    random ^= random << 13;
++    random ^= random >> 17;
++    random ^= random << 5;
++    byte = static_cast<unsigned char>(random);
++  }
++  for (size_t offset = 0; offset < 64; ++offset) {
++    for (size_t length : {255u, 256u, 257u, 319u, 320u, 4095u, 4096u}) {
++      for (uint32_t seed : {0u, 0x12345678u}) {
++        uint32_t expected = ~seed;
++        for (size_t i = 0; i < length; ++i) {
++          expected ^= bytes[offset + i];
++          for (int bit = 0; bit < 8; ++bit)
++            expected = (expected >> 1) ^ (0xedb88320u & (0u - (expected & 1)));
++        }
++        const auto* first = bytes.data() + offset;
++        const size_t split = length / 2;
++        EXPECT_EQ(~expected, crc32_z(seed, first, length));
++        EXPECT_EQ(~expected, crc32_z(crc32_z(seed, first, split), first + split,
++                                     length - split));
++      }
++    }
++  }
++}
++
+ void TestPayloads(size_t input_size, zlib_internal::WrapperType type,
+                   const int compression_level = Z_DEFAULT_COMPRESSION) {
+   std::vector<unsigned char> input;
+diff --git a/third_party/zlib/cpu_features.c b/third_party/zlib/cpu_features.c
+index 6613a65e..d04551c5 100644
+--- a/third_party/zlib/cpu_features.c
++++ b/third_party/zlib/cpu_features.c
+@@ -193,7 +193,26 @@ static void _cpu_check_features(void)
+                           x86_cpu_has_pclmulqdq;
+ 
+ #ifdef CRC32_SIMD_AVX512_PCLMUL
+-    x86_cpu_enable_avx512 = _xgetbv(0) & 0x00000040;
++    /* XGETBV needs XSAVE and OSXSAVE. */
++    if ((abcd[2] & 0x0c000000) == 0x0c000000) {
++        const uint32_t leaf1_ecx = (uint32_t)abcd[2];
++        const uint32_t leaf1_edx = (uint32_t)abcd[3];
++#ifdef _MSC_VER
++        __cpuid(abcd, 0);
++#else
++        __cpuid(0, abcd[0], abcd[1], abcd[2], abcd[3]);
++#endif
++        if (abcd[0] >= 7) {
++#ifdef _MSC_VER
++            __cpuidex(abcd, 7, 0);
++#else
++            __cpuid_count(7, 0, abcd[0], abcd[1], abcd[2], abcd[3]);
++#endif
++            x86_cpu_enable_avx512 = x86_cpu_has_avx512_pclmul(
++                leaf1_ecx, leaf1_edx, (uint32_t)abcd[1], (uint32_t)abcd[2],
++                _xgetbv(0));
++        }
++    }
+ #endif
+ }
+ #endif // x86 & NO_SIMD
+diff --git a/third_party/zlib/cpu_features.h b/third_party/zlib/cpu_features.h
+index 6092c7e8..20ee9690 100644
+--- a/third_party/zlib/cpu_features.h
++++ b/third_party/zlib/cpu_features.h
+@@ -5,8 +5,34 @@
+  * found in the Chromium source repository LICENSE file.
+  */
+ 
++#include <stdint.h>
++
+ #include "zlib.h"
+ 
++/* CPUID.1 features the VPCLMULQDQ CRC kernels use besides their own: SSE2,
++ * PCLMULQDQ, SSE4.1 (_mm_extract_epi32) and AVX with XSAVE and OSXSAVE. They
++ * are checked here instead of through x86_cpu_enable_simd, so that gating the
++ * SSE kernels differently cannot silently change what these need. */
++static inline int x86_cpu_has_crc_base(uint32_t leaf1_ecx,
++                                       uint32_t leaf1_edx) {
++    const uint32_t required_ecx = (1u << 1) | (1u << 19) | (1u << 26) |
++                                  (1u << 27) | (1u << 28);
++    return (leaf1_ecx & required_ecx) == required_ecx &&
++           (leaf1_edx & (1u << 26)) != 0;
++}
++
++/* AVX-512F does not imply VPCLMULQDQ (e.g. Skylake-X). XCR0 0xe6 is the XMM,
++ * YMM, opmask and ZMM state. */
++static inline int x86_cpu_has_avx512_pclmul(uint32_t leaf1_ecx,
++                                            uint32_t leaf1_edx,
++                                            uint32_t leaf7_ebx,
++                                            uint32_t leaf7_ecx,
++                                            uint64_t xcr0) {
++    return x86_cpu_has_crc_base(leaf1_ecx, leaf1_edx) &&
++           (leaf7_ebx & (1u << 16)) && (leaf7_ecx & (1u << 10)) &&
++           (xcr0 & 0xe6) == 0xe6;
++}
++
+ /* TODO(cavalcantii): remove checks for x86_flags on deflate.
+  */
+ extern int arm_cpu_enable_crc32;
+diff --git a/third_party/zlib/crc32_simd.c b/third_party/zlib/crc32_simd.c
+index f9d52a63..0e69db4e 100644
+--- a/third_party/zlib/crc32_simd.c
++++ b/third_party/zlib/crc32_simd.c
+@@ -62,7 +62,8 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(  /* AVX512+PCLMUL */
+     x3 = _mm512_loadu_si512((__m512i *)(buf + 0x80));
+     x4 = _mm512_loadu_si512((__m512i *)(buf + 0xC0));
+ 
+-    x1 = _mm512_xor_si512(x1, _mm512_castsi128_si512(_mm_cvtsi32_si128(crc)));
++    x1 = _mm512_xor_si512(x1, _mm512_inserti32x4(_mm512_setzero_si512(),
++        _mm_cvtsi32_si128(crc), 0));
+ 
+     x0 = _mm512_load_si512((__m512i *)k1k2);
+ 
