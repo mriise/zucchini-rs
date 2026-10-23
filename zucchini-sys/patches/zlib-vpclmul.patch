@@ -28,13 +28,15 @@ see upstream/1-zlib-avx512-detection.patch and 2-zlib-avx2-vpclmul.patch.
  __attribute__((__target__("xsave")))
  #endif
  static void _cpu_check_features(void)
-@@ -192,8 +194,30 @@ static void _cpu_check_features(void)
+@@ -192,8 +194,34 @@ static void _cpu_check_features(void)
                            x86_cpu_has_sse42 &&
                            x86_cpu_has_pclmulqdq;
  
 +#if defined(CRC32_SIMD_AVX512_PCLMUL) || defined(CRC32_SIMD_AVX2_PCLMUL)
 +    /* XGETBV needs XSAVE and OSXSAVE. */
-+    if (x86_cpu_enable_simd && (abcd[2] & 0x0c000000) == 0x0c000000) {
++    if ((abcd[2] & 0x0c000000) == 0x0c000000) {
++        const uint32_t leaf1_ecx = (uint32_t)abcd[2];
++        const uint32_t leaf1_edx = (uint32_t)abcd[3];
 +#ifdef _MSC_VER
 +        __cpuid(abcd, 0);
 +#else
@@ -49,11 +51,13 @@ see upstream/1-zlib-avx512-detection.patch and 2-zlib-avx2-vpclmul.patch.
  #ifdef CRC32_SIMD_AVX512_PCLMUL
 -    x86_cpu_enable_avx512 = _xgetbv(0) & 0x00000040;
 +            x86_cpu_enable_avx512 = x86_cpu_has_avx512_pclmul(
-+                (uint32_t)abcd[1], (uint32_t)abcd[2], _xgetbv(0));
++                leaf1_ecx, leaf1_edx, (uint32_t)abcd[1], (uint32_t)abcd[2],
++                _xgetbv(0));
 +#endif
 +#ifdef CRC32_SIMD_AVX2_PCLMUL
 +            x86_cpu_enable_avx2 = x86_cpu_has_avx2_pclmul(
-+                (uint32_t)abcd[1], (uint32_t)abcd[2], _xgetbv(0));
++                leaf1_ecx, leaf1_edx, (uint32_t)abcd[1], (uint32_t)abcd[2],
++                _xgetbv(0));
 +#endif
 +        }
 +    }
@@ -62,7 +66,7 @@ see upstream/1-zlib-avx512-detection.patch and 2-zlib-avx2-vpclmul.patch.
  #endif // x86 & NO_SIMD
 --- a/third_party/zlib/cpu_features.h
 +++ b/third_party/zlib/cpu_features.h
-@@ -5,8 +5,27 @@
+@@ -5,8 +5,45 @@
   * found in the Chromium source repository LICENSE file.
   */
  
@@ -70,27 +74,45 @@ see upstream/1-zlib-avx512-detection.patch and 2-zlib-avx2-vpclmul.patch.
 +
  #include "zlib.h"
  
++/* CPUID.1 features the VPCLMULQDQ CRC kernels use besides their own: SSE2,
++ * PCLMULQDQ, SSE4.1 (_mm_extract_epi32) and AVX with XSAVE and OSXSAVE. They
++ * are checked here instead of through x86_cpu_enable_simd, so that gating the
++ * SSE kernels differently cannot silently change what these need. */
++static inline int x86_cpu_has_crc_base(uint32_t leaf1_ecx,
++                                       uint32_t leaf1_edx) {
++    const uint32_t required_ecx = (1u << 1) | (1u << 19) | (1u << 26) |
++                                  (1u << 27) | (1u << 28);
++    return (leaf1_ecx & required_ecx) == required_ecx &&
++           (leaf1_edx & (1u << 26)) != 0;
++}
++
 +/* AVX-512F does not imply VPCLMULQDQ (e.g. Skylake-X). XCR0 0xe6 is the XMM,
 + * YMM, opmask and ZMM state. */
-+static inline int x86_cpu_has_avx512_pclmul(uint32_t leaf7_ebx,
++static inline int x86_cpu_has_avx512_pclmul(uint32_t leaf1_ecx,
++                                            uint32_t leaf1_edx,
++                                            uint32_t leaf7_ebx,
 +                                            uint32_t leaf7_ecx,
 +                                            uint64_t xcr0) {
-+    return (leaf7_ebx & (1u << 16)) && (leaf7_ecx & (1u << 10)) &&
++    return x86_cpu_has_crc_base(leaf1_ecx, leaf1_edx) &&
++           (leaf7_ebx & (1u << 16)) && (leaf7_ecx & (1u << 10)) &&
 +           (xcr0 & 0xe6) == 0xe6;
 +}
 +
 +/* Zen 3 and Intel client parts without AVX-512 have AVX2 VPCLMULQDQ. */
-+static inline int x86_cpu_has_avx2_pclmul(uint32_t leaf7_ebx,
++static inline int x86_cpu_has_avx2_pclmul(uint32_t leaf1_ecx,
++                                          uint32_t leaf1_edx,
++                                          uint32_t leaf7_ebx,
 +                                          uint32_t leaf7_ecx,
 +                                          uint64_t xcr0) {
-+    return (leaf7_ebx & (1u << 5)) && (leaf7_ecx & (1u << 10)) &&
++    return x86_cpu_has_crc_base(leaf1_ecx, leaf1_edx) &&
++           (leaf7_ebx & (1u << 5)) && (leaf7_ecx & (1u << 10)) &&
 +           (xcr0 & 0x6) == 0x6;
 +}
 +
  /* TODO(cavalcantii): remove checks for x86_flags on deflate.
   */
  extern int arm_cpu_enable_crc32;
-@@ -15,6 +34,7 @@ extern int x86_cpu_enable_sse2;
+@@ -15,6 +52,7 @@ extern int x86_cpu_enable_sse2;
  extern int x86_cpu_enable_ssse3;
  extern int x86_cpu_enable_simd;
  extern int x86_cpu_enable_avx512;

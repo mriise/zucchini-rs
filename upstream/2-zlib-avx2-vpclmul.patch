@@ -25,13 +25,13 @@ Bug: TODO_FILE_CRBUG
 ---
  third_party/zlib/BUILD.gn                     |   5 +-
  third_party/zlib/chromeconf.h                 |   2 +
- .../zlib/contrib/tests/utils_unittest.cc      |  10 +-
- third_party/zlib/cpu_features.c               |  14 +-
- third_party/zlib/cpu_features.h               |   9 +
+ .../zlib/contrib/tests/utils_unittest.cc      |  20 +-
+ third_party/zlib/cpu_features.c               |  15 +-
+ third_party/zlib/cpu_features.h               |  12 ++
  third_party/zlib/crc32.c                      |  13 ++
- third_party/zlib/crc32_simd.c                 | 167 ++++++++++++++++++
+ third_party/zlib/crc32_simd.c                 | 167 +++++++++++++++++
  third_party/zlib/crc32_simd.h                 |   6 +
- 8 files changed, 221 insertions(+), 5 deletions(-)
+ 8 files changed, 235 insertions(+), 5 deletions(-)
 
 diff --git a/third_party/zlib/BUILD.gn b/third_party/zlib/BUILD.gn
 index 29248e1d..65074c0b 100644
@@ -73,21 +73,31 @@ diff --git a/third_party/zlib/contrib/tests/utils_unittest.cc b/third_party/zlib
 index 14023ac4..79ce9672 100644
 --- a/third_party/zlib/contrib/tests/utils_unittest.cc
 +++ b/third_party/zlib/contrib/tests/utils_unittest.cc
-@@ -39,6 +39,13 @@ TEST(ZlibTest, Avx512CrcCpuSupport) {
-   EXPECT_FALSE(x86_cpu_has_avx512_pclmul(1u << 16, 1u << 10, 0x06));
+@@ -77,6 +77,23 @@ TEST(ZlibTest, Avx512CrcCpuSupport) {
+                                          kXcr0Avx512));
  }
  
 +TEST(ZlibTest, Avx2CrcCpuSupport) {
-+  EXPECT_TRUE(x86_cpu_has_avx2_pclmul(1u << 5, 1u << 10, 0x06));
-+  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(0, 1u << 10, 0x06));
-+  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(1u << 5, 0, 0x06));
-+  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(1u << 5, 1u << 10, 0x02));
++  EXPECT_TRUE(x86_cpu_has_avx2_pclmul(kLeaf1Ecx, kLeaf1Edx, kAvx2,
++                                      kVpclmulqdq, kXcr0Avx));
++  // No AVX2.
++  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(kLeaf1Ecx, kLeaf1Edx, 0, kVpclmulqdq,
++                                       kXcr0Avx));
++  // AVX2 without VPCLMULQDQ, e.g. Haswell.
++  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(kLeaf1Ecx, kLeaf1Edx, kAvx2, 0,
++                                       kXcr0Avx));
++  // The OS has not enabled the YMM state.
++  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(kLeaf1Ecx, kLeaf1Edx, kAvx2,
++                                       kVpclmulqdq, 0x02));
++  // A CPUID.1 feature the kernel needs is missing (no SSE4.1).
++  EXPECT_FALSE(x86_cpu_has_avx2_pclmul(kLeaf1Ecx & ~(1u << 19), kLeaf1Edx,
++                                       kAvx2, kVpclmulqdq, kXcr0Avx));
 +}
 +
  TEST(ZlibTest, Crc32MatchesBitwiseReference) {
    (void)crc32_z(0, Z_NULL, 0);
    std::vector<unsigned char> bytes(4096 + 64);
-@@ -50,7 +57,8 @@ TEST(ZlibTest, Crc32MatchesBitwiseReference) {
+@@ -88,7 +105,8 @@ TEST(ZlibTest, Crc32MatchesBitwiseReference) {
      byte = static_cast<unsigned char>(random);
    }
    for (size_t offset = 0; offset < 64; ++offset) {
@@ -133,19 +143,21 @@ index d04551c5..32025dc5 100644
 -#ifdef CRC32_SIMD_AVX512_PCLMUL
 +#if defined(CRC32_SIMD_AVX512_PCLMUL) || defined(CRC32_SIMD_AVX2_PCLMUL)
      /* XGETBV needs XSAVE and OSXSAVE. */
-     if (x86_cpu_enable_simd && (abcd[2] & 0x0c000000) == 0x0c000000) {
- #ifdef _MSC_VER
-@@ -206,8 +208,14 @@ static void _cpu_check_features(void)
+     if ((abcd[2] & 0x0c000000) == 0x0c000000) {
+         const uint32_t leaf1_ecx = (uint32_t)abcd[2];
+@@ -208,9 +210,16 @@ static void _cpu_check_features(void)
  #else
              __cpuid_count(7, 0, abcd[0], abcd[1], abcd[2], abcd[3]);
  #endif
 +#ifdef CRC32_SIMD_AVX512_PCLMUL
              x86_cpu_enable_avx512 = x86_cpu_has_avx512_pclmul(
-                 (uint32_t)abcd[1], (uint32_t)abcd[2], _xgetbv(0));
+                 leaf1_ecx, leaf1_edx, (uint32_t)abcd[1], (uint32_t)abcd[2],
+                 _xgetbv(0));
 +#endif
 +#ifdef CRC32_SIMD_AVX2_PCLMUL
 +            x86_cpu_enable_avx2 = x86_cpu_has_avx2_pclmul(
-+                (uint32_t)abcd[1], (uint32_t)abcd[2], _xgetbv(0));
++                leaf1_ecx, leaf1_edx, (uint32_t)abcd[1], (uint32_t)abcd[2],
++                _xgetbv(0));
 +#endif
          }
      }
@@ -154,22 +166,25 @@ diff --git a/third_party/zlib/cpu_features.h b/third_party/zlib/cpu_features.h
 index 20ee9690..b6d367e7 100644
 --- a/third_party/zlib/cpu_features.h
 +++ b/third_party/zlib/cpu_features.h
-@@ -18,6 +18,14 @@ static inline int x86_cpu_has_avx512_pclmul(uint32_t leaf7_ebx,
+@@ -33,6 +33,17 @@ static inline int x86_cpu_has_avx512_pclmul(uint32_t leaf7_ebx,
             (xcr0 & 0xe6) == 0xe6;
  }
  
 +/* Zen 3 and Intel client parts without AVX-512 have AVX2 VPCLMULQDQ. */
-+static inline int x86_cpu_has_avx2_pclmul(uint32_t leaf7_ebx,
++static inline int x86_cpu_has_avx2_pclmul(uint32_t leaf1_ecx,
++                                          uint32_t leaf1_edx,
++                                          uint32_t leaf7_ebx,
 +                                          uint32_t leaf7_ecx,
 +                                          uint64_t xcr0) {
-+    return (leaf7_ebx & (1u << 5)) && (leaf7_ecx & (1u << 10)) &&
++    return x86_cpu_has_crc_base(leaf1_ecx, leaf1_edx) &&
++           (leaf7_ebx & (1u << 5)) && (leaf7_ecx & (1u << 10)) &&
 +           (xcr0 & 0x6) == 0x6;
 +}
 +
  /* TODO(cavalcantii): remove checks for x86_flags on deflate.
   */
  extern int arm_cpu_enable_crc32;
-@@ -26,6 +34,7 @@ extern int x86_cpu_enable_sse2;
+@@ -41,6 +52,7 @@ extern int x86_cpu_enable_sse2;
  extern int x86_cpu_enable_ssse3;
  extern int x86_cpu_enable_simd;
  extern int x86_cpu_enable_avx512;
