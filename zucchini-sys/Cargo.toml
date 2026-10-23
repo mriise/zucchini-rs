@@ -16,7 +16,11 @@ links = "zucchini"
 prebuilt = ["dep:ureq", "dep:sha2", "dep:flate2", "dep:tar"]
 
 # Each of these applies one patch in patches/ to Zucchini's sources, so they need a source build.
-# Patches and results are byte-identical with or without them.
+# Off by default, so the default library is Chromium's Zucchini with only build fixes. Patches and
+# results are byte-identical with or without them.
+#
+# zucc_generate_with_progress and zucc_apply_with_progress, which report progress and can cancel.
+progress = []
 #
 # std::vector instead of std::deque for Zucchini's offset arrays: about 1.1 s less of a 177 MB PE's
 # apply with MSVC's standard library. Needs contiguous memory for those arrays.

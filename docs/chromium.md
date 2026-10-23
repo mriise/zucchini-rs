@@ -17,13 +17,16 @@ plus the three build flag headers GN would generate. The shims are this reposito
 
 `build.rs` compiles the `zucchini_lib` sources listed in Chromium's own `BUILD.gn`, so a new pin
 needs no source list edits. It applies the unified diffs in `zucchini-sys/patches/` to copies of
-Chromium files, which the compiler finds before the originals. Only the first applies by default;
-each other one needs a source build and its feature, and patches and results are byte-identical with
-or without them:
+Chromium files, which the compiler finds before the originals. Only the first always applies. The
+others are opt-in: each needs a source build and its feature, applies with or without the others
+(except `radix-sort.patch`, which needs `vector-containers.patch`), and leaves patches and results
+byte-identical. They stay out of the default build and the prebuilt libraries, so those compile
+Zucchini as Chromium has it:
 
 | Patch | Feature | Change |
 |---|---|---|
 | `libstdcxx-span.patch` | always | one line of `base/containers/span.h` that needs libstdc++ 15 |
+| `progress.patch` | `progress` | generating, applying and suffix sorting report progress through `zucchini_rs::ProgressSteps` and `ProgressLoop`, declared in `suffix_array.h` and defined in `shim/zucchini_c.cc`, which throw out of Zucchini when the C API's progress callback cancels. Each step's share of the time was measured on a 145 MB PE |
 | `vector-containers.patch` | `vector-containers` | `std::vector` instead of `std::deque` for Zucchini's offset arrays. MSVC's deque stores 16 bytes per block (libc++, which Chromium builds with, stores 4 KiB): applying a patch to a 177 MB PE took 4.75 s with deques and 3.65 s with vectors |
 | `radix-sort.patch` | `radix-sort` | `SortAndUniquify` and `TargetPool::FilterAndProject` sort through `zucchini_rs::Sort` (`shim/zucchini_rs/sort.h`), which radix sorts vectors of 32-bit offsets: the same order, about 0.25 s less of that apply. Written against the vector-containers result |
 | `crc32-hook.patch` | `crc32-hook` | renames `CalculateCrc32` in `crc32.cc`, so the C API's own can call the function `zucc_set_crc32` chose and fall back to Chromium's |
@@ -43,4 +46,5 @@ The script fetches and pins the new commit; commit the submodule change with it.
 is header-only and needs nothing new, otherwise write a shim. If a patch no longer applies,
 `build.rs` stops and names the file and line; make the same change against the new pin and write the
 diff with paths `a/<path>` and `b/<path>` relative to the Chromium checkout (`git diff` there does). Then run the tests once
-more with `--features zucchini/radix-sort,zucchini/crc-fast`, which applies every patch.
+more with `--features zucchini/progress,zucchini/radix-sort,zucchini/crc-fast`, which applies every
+patch.

@@ -9,7 +9,7 @@
 #![no_std]
 #![allow(non_camel_case_types)]
 
-use core::ffi::{c_char, c_int};
+use core::ffi::{c_char, c_int, c_void};
 use core::marker::{PhantomData, PhantomPinned};
 
 // Results 0 to 10 are Zucchini's own status codes; 100 and up come from the C API.
@@ -25,6 +25,7 @@ pub const ZUCC_BUFFER_SIZE: c_int = 101;
 pub const ZUCC_OUT_OF_MEMORY: c_int = 102;
 pub const ZUCC_CHECK_FAILED: c_int = 103;
 pub const ZUCC_EMPTY_FILE: c_int = 104;
+pub const ZUCC_CANCELLED: c_int = 105;
 
 pub const ZUCC_LOG_OFF: c_int = 0;
 pub const ZUCC_LOG_ERROR: c_int = 1;
@@ -57,6 +58,12 @@ pub struct zucc_patch_header {
     pub new_crc: u32,
 }
 
+/// Told how far a generate or apply has got, as a percentage from 0 to 100 that never falls. Called
+/// often, on the calling thread, with the same percentage many times over; 100 comes only once the
+/// work has succeeded. Returns nonzero to cancel, and the call then returns `ZUCC_CANCELLED`. Must
+/// not unwind.
+pub type zucc_progress_fn = unsafe extern "C" fn(context: *mut c_void, percent: c_int) -> c_int;
+
 /// The CRC-32 of `len` bytes at `data`, as zlib's `crc32` computes it (CRC-32/ISO-HDLC).
 pub type zucc_crc32_fn = unsafe extern "C" fn(data: *const u8, len: usize) -> u32;
 
@@ -67,6 +74,19 @@ unsafe extern "C" {
         new_data: *const u8,
         new_len: usize,
         options: *const zucc_generate_options,
+        patch_out: *mut *mut zucc_patch,
+    ) -> c_int;
+    /// `zucc_generate`, reporting to `progress` (with `context`) as it goes. Only in a library
+    /// built with the `progress` feature.
+    #[cfg(feature = "progress")]
+    pub fn zucc_generate_with_progress(
+        old_data: *const u8,
+        old_len: usize,
+        new_data: *const u8,
+        new_len: usize,
+        options: *const zucc_generate_options,
+        progress: Option<zucc_progress_fn>,
+        context: *mut c_void,
         patch_out: *mut *mut zucc_patch,
     ) -> c_int;
     pub fn zucc_patch_size(patch: *const zucc_patch) -> usize;
@@ -80,6 +100,19 @@ unsafe extern "C" {
         patch_len: usize,
         new_out: *mut u8,
         new_len: usize,
+    ) -> c_int;
+    /// `zucc_apply`, reporting to `progress` (with `context`) as it goes. Only in a library built
+    /// with the `progress` feature.
+    #[cfg(feature = "progress")]
+    pub fn zucc_apply_with_progress(
+        old_data: *const u8,
+        old_len: usize,
+        patch: *const u8,
+        patch_len: usize,
+        new_out: *mut u8,
+        new_len: usize,
+        progress: Option<zucc_progress_fn>,
+        context: *mut c_void,
     ) -> c_int;
     pub fn zucc_last_error() -> *const c_char;
     pub fn zucc_set_log_level(level: c_int);
