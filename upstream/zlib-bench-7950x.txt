@@ -33,3 +33,22 @@ paper-100k.pdf      84.2 |   657.3     84.1 |   648.9     81.1 |   655.8     82.
 plrabn12.txt        36.5 |   728.9     37.6 |   737.9     36.9 |   735.7     35.8 |   731.5 
 urls.10K            82.7 |   825.2     82.4 |   829.9     81.3 |   844.9     82.3 |   821.9 
 geomean             68.7 |  1297.5     68.4 |  1277.2     67.0 |  1282.7     67.1 |  1279.6 
+
+CRC-32 throughput, same CPU, Chromium tiers forced in one binary, zlib-ng 49686f94 built
+with and without AVX-512, GiB/s, median of 15 rotating rounds:
+
+    bytes  chromium sse42  chromium avx2  chromium avx512  zlib-ng avx2  zlib-ng avx512
+      256           13.91          17.92            16.20         14.16           13.89
+     1024           17.40          31.73            40.70         26.07           34.70
+     4096           17.78          35.27            65.95         33.32           57.91
+    65536           18.35          37.19            74.14         37.00           74.31
+  1048576           18.36          36.18            74.18         36.50           74.78
+ 16777216           16.64          30.77            59.33         31.91           58.21
+
+zlib_bench rerun with the AVX2 kernel, geomean MB/s (comp | decomp):
+  gzip  pre_sse        68.4 |  1232.9
+  gzip  avx2           68.3 |  1289.8
+  gzip  avx2_avx512    68.6 |  1327.3
+  zlib  pre_sse        67.5 |  1276.2
+  zlib  avx2           68.4 |  1285.7
+  zlib  avx2_avx512    69.4 |  1312.9
