@@ -1,18 +1,12 @@
-Reports progress from Zucchini's long loops and between its steps through
-shim/zucchini_rs/progress.h, which throws zucchini_rs::Cancelled out of them when the C API's
-progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results are unchanged.
+Reports progress from Zucchini's long loops and between its steps, and stops them when the C API's
+progress callback cancels. suffix_array.h, which generating, applying and suffix sorting all reach,
+declares zucchini_rs::ProgressSteps, ProgressLoop and ReportProgress; shim/zucchini_c.cc defines
+them, and they throw zucchini_rs::Cancelled, which the C API returns as ZUCC_CANCELLED. Patches and
+results are unchanged.
 
 --- a/components/zucchini/equivalence_map.cc
 +++ b/components/zucchini/equivalence_map.cc
-@@ -15,6 +15,7 @@
- #include "components/zucchini/encoded_view.h"
- #include "components/zucchini/patch_reader.h"
- #include "components/zucchini/suffix_array.h"
-+#include "zucchini_rs/progress.h"
- 
- namespace zucchini {
- 
-@@ -438,8 +439,10 @@ void EquivalenceMap::CreateCandidates(
+@@ -438,8 +438,10 @@ void EquivalenceMap::CreateCandidates(
    // This is an heuristic to find 'good' equivalences on encoded views.
    // Equivalences are found in ascending order of |new_image|.
    offset_t dst_offset = 0;
@@ -25,15 +19,80 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
        continue;
 --- a/components/zucchini/suffix_array.h
 +++ b/components/zucchini/suffix_array.h
-@@ -13,6 +13,7 @@
- #include "base/check.h"
+@@ -6,6 +6,7 @@
+ #define COMPONENTS_ZUCCHINI_SUFFIX_ARRAY_H_
+ 
+ #include <algorithm>
++#include <cstdint>
+ #include <iterator>
+ #include <numeric>
+ #include <vector>
+@@ -14,6 +15,64 @@
  #include "base/compiler_specific.h"
  #include "base/containers/adapters.h"
-+#include "zucchini_rs/progress.h"
  
++// Progress reports and cancellation for generating and applying, defined by
++// zucchini-rs's C API (shim/zucchini_c.cc). Declared here because generating,
++// applying and suffix sorting all reach this header.
++namespace zucchini_rs {
++
++// Thrown out of Zucchini when the C API's progress callback cancels; the C API
++// returns ZUCC_CANCELLED. Not a std::exception, so nothing mistakes it for a
++// failure.
++struct Cancelled {};
++
++// Divides the enclosing range of progress reports into consecutive steps, and
++// restores it when destroyed. The outermost range is the whole C API call.
++// Does nothing when the call has no progress callback.
++class ProgressSteps {
++ public:
++  ProgressSteps();
++  ProgressSteps(const ProgressSteps&) = delete;
++  ProgressSteps& operator=(const ProgressSteps&) = delete;
++  ~ProgressSteps();
++
++  // Starts the next step, which runs from where the last one ended (or 0) to
++  // |end|, both fractions of the enclosing range. Reports the step's start, so
++  // it can throw Cancelled.
++  void Next(double end);
++
++ private:
++  bool active_ = false;
++  double lo_ = 0;
++  double hi_ = 0;
++  double begin_ = 0;
++};
++
++// Reports that |fraction| (0 to 1) of the current step is done, and throws
++// Cancelled if the callback asks to stop. Does nothing when the call has no
++// progress callback.
++void ReportProgress(double fraction);
++
++// Reports progress through a loop over [0, |total|) at most about 256 times.
++class ProgressLoop {
++ public:
++  explicit ProgressLoop(uint64_t total)
++      : total_(total), step_(total / 256 + 1) {}
++
++  void At(uint64_t done) {
++    if (done >= next_) {
++      next_ = done + step_;
++      ReportProgress(total_ ? static_cast<double>(done) / total_ : 1.0);
++    }
++  }
++
++ private:
++  uint64_t total_;
++  uint64_t step_;
++  uint64_t next_ = 0;
++};
++
++}  // namespace zucchini_rs
++
  namespace zucchini {
  
-@@ -239,7 +240,11 @@ class InducedSuffixSort {
+ // A functor class that implements the naive suffix sorting algorithm that uses
+@@ -239,7 +298,11 @@ class InducedSuffixSort {
          key_type key = str[length - 1];
          suffix_array[bucket_bounds[key]++] = length - 1;
        }
@@ -45,7 +104,7 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
          size_type suffix_index = *it;
  
          // While the original algorithm marks unset suffixes with -1,
-@@ -264,8 +269,11 @@ class InducedSuffixSort {
+@@ -264,8 +327,11 @@ class InducedSuffixSort {
        // be updated.
        std::partial_sum(buckets.begin(), buckets.end(), bucket_bounds.begin());
  
@@ -57,7 +116,7 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
          size_type suffix_index = *it;
          if (suffix_index != length && suffix_index > 0 &&
              sl_partition[--suffix_index] == SType) {
-@@ -301,7 +309,9 @@ class InducedSuffixSort {
+@@ -301,7 +367,9 @@ class InducedSuffixSort {
        // Note that suf(S,0) is never a LMS suffix. Substrings will be visited in
        // lexicographical order.
        size_type previous_lms = 0;
@@ -67,40 +126,41 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
          if (*it > 0 && sl_partition[*it] == SType &&
              sl_partition[*it - 1] == LType) {
            // suf(S, *it) is a LMS suffix.
-@@ -369,6 +379,9 @@ class InducedSuffixSort {
+@@ -369,6 +437,10 @@ class InducedSuffixSort {
        if (length < 2)
          return;
  
-+      const double* shares = zucchini_rs::kSuffixSortShares;
++      // Where each step ends, as a fraction of the time the sort takes.
++      constexpr double kShares[] = {0.03, 0.35, 0.52, 0.62};
 +      zucchini_rs::ProgressSteps steps;
-+      steps.Next(shares[0]);
++      steps.Next(kShares[0]);
        std::vector<SLType> sl_partition(length);
        size_type lms_count =
            BuildSLPartition(str, length, key_bound, sl_partition.rbegin());
-@@ -379,12 +392,14 @@ class InducedSuffixSort {
+@@ -379,12 +451,14 @@ class InducedSuffixSort {
        if (lms_indices.size() > 1) {
          // Given |lms_indices| in the same order they appear in |str|, induce
          // LMS substrings relative order and write result to |suffix_array|.
-+        steps.Next(shares[1]);
++        steps.Next(kShares[1]);
          InducedSort(str, length, sl_partition, lms_indices, buckets,
                      suffix_array);
          std::vector<size_type> lms_str(lms_indices.size());
  
          // Given LMS substrings in relative order found in |suffix_array|,
          // map LMS substrings to unique labels to form a new string, |lms_str|.
-+        steps.Next(shares[2]);
++        steps.Next(kShares[2]);
          size_type label_count =
              LabelLmsSubstrings(str, length, sl_partition, suffix_array,
                                 lms_indices.begin(), lms_str.begin());
-@@ -408,6 +423,7 @@ class InducedSuffixSort {
+@@ -408,6 +482,7 @@ class InducedSuffixSort {
            // labeled LMS suffixes in the same order they appear in |str|.
            // Note that |KeyType| will be size_type because |lms_str| contains
            // indices. |lms_str| is at most half the length of |str|.
-+          steps.Next(shares[3]);
++          steps.Next(kShares[3]);
            Implementation<size_type, size_type>::SuffixSort(
                lms_str.begin(), static_cast<size_type>(lms_str.size()),
                label_count, suffix_array);
-@@ -423,6 +439,7 @@ class InducedSuffixSort {
+@@ -423,6 +498,7 @@ class InducedSuffixSort {
        }
        // Given |lms_indices| where LMS suffixes are sorted, induce the full
        // order of suffixes in |str|.
@@ -110,15 +170,27 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
      }
 --- a/components/zucchini/zucchini_apply.cc
 +++ b/components/zucchini/zucchini_apply.cc
-@@ -16,6 +16,7 @@
+@@ -16,18 +16,31 @@
  #include "components/zucchini/element_detection.h"
  #include "components/zucchini/equivalence_map.h"
  #include "components/zucchini/image_index.h"
-+#include "zucchini_rs/progress.h"
++#include "components/zucchini/suffix_array.h"
  
  namespace zucchini {
  
-@@ -25,9 +26,11 @@ bool ApplyEquivalenceAndExtraData(ConstBufferView old_image,
++namespace {
++
++// Shares of a step's time that its parts take, so progress rises evenly.
++// Each file's CRC-32, of the whole call.
++constexpr double kCrc32Share = 0.08;
++// Copying equivalences and extra data, and raw deltas, of an element.
++constexpr double kApplyCopyShare = 0.1;
++
++}  // namespace
++
+ bool ApplyEquivalenceAndExtraData(ConstBufferView old_image,
+                                   const PatchElementReader& patch_reader,
+                                   MutableBufferView new_image) {
    EquivalenceSource equiv_source = patch_reader.GetEquivalenceSource();
    ExtraDataSource extra_data_source = patch_reader.GetExtraDataSource();
    MutableBufferView::iterator dst_it = new_image.begin();
@@ -130,7 +202,7 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
      MutableBufferView::iterator next_dst_it =
          UNSAFE_TODO(new_image.begin() + equivalence->dst_offset);
      CHECK(next_dst_it >= dst_it);
-@@ -120,6 +123,8 @@ bool ApplyReferencesCorrection(ExecutableType exe_type,
+@@ -120,6 +133,8 @@ bool ApplyReferencesCorrection(ExecutableType exe_type,
                               base::checked_cast<offset_t>(new_image.size()));
  
    std::vector<ReferenceGroup> new_groups = new_disasm->MakeReferenceGroups();
@@ -139,7 +211,7 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
    for (const auto& pool_and_sub_groups : pool_groups) {
      PoolTag pool_tag = pool_and_sub_groups.first;
      const std::vector<ReferenceGroup>& sub_groups = pool_and_sub_groups.second;
-@@ -140,6 +145,8 @@ bool ApplyReferencesCorrection(ExecutableType exe_type,
+@@ -140,6 +155,8 @@ bool ApplyReferencesCorrection(ExecutableType exe_type,
  
      // Correct all new references, and write results to |new_disasm|.
      for (ReferenceGroup group : sub_groups) {
@@ -148,7 +220,7 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
        std::unique_ptr<ReferenceWriter> ref_writer =
            new_groups[group.type_tag().value()].GetWriter(new_image,
                                                           new_disasm.get());
-@@ -147,6 +154,7 @@ bool ApplyReferencesCorrection(ExecutableType exe_type,
+@@ -147,6 +164,7 @@ bool ApplyReferencesCorrection(ExecutableType exe_type,
        EquivalenceSource equiv_source = patch.GetEquivalenceSource();
        for (auto equivalence = equiv_source.GetNext(); equivalence.has_value();
             equivalence = equiv_source.GetNext()) {
@@ -156,7 +228,7 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
          std::unique_ptr<ReferenceReader> ref_gen = group.GetReader(
              equivalence->src_offset, equivalence->src_end(), old_disasm.get());
          for (auto ref = ref_gen->GetNext(); ref.has_value();
-@@ -186,9 +194,14 @@ bool ApplyElement(ExecutableType exe_type,
+@@ -186,9 +204,14 @@ bool ApplyElement(ExecutableType exe_type,
                    ConstBufferView old_image,
                    const PatchElementReader& patch_reader,
                    MutableBufferView new_image) {
@@ -164,7 +236,7 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
 -         ApplyRawDelta(patch_reader, new_image) &&
 -         ApplyReferencesCorrection(exe_type, old_image, patch_reader,
 +  zucchini_rs::ProgressSteps steps;
-+  steps.Next(zucchini_rs::kApplyCopyShare);
++  steps.Next(kApplyCopyShare);
 +  if (!ApplyEquivalenceAndExtraData(old_image, patch_reader, new_image) ||
 +      !ApplyRawDelta(patch_reader, new_image)) {
 +    return false;
@@ -174,12 +246,12 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
                                     new_image);
  }
  
-@@ -197,18 +210,26 @@ bool ApplyElement(ExecutableType exe_type,
+@@ -197,18 +220,26 @@ bool ApplyElement(ExecutableType exe_type,
  status::Code ApplyBuffer(ConstBufferView old_image,
                           const EnsemblePatchReader& patch_reader,
                           MutableBufferView new_image) {
 +  zucchini_rs::ProgressSteps steps;
-+  steps.Next(zucchini_rs::kCrc32Share);
++  steps.Next(kCrc32Share);
    if (!patch_reader.CheckOldFile(old_image)) {
      LOG(ERROR) << "Invalid old_image.";
      return status::kStatusInvalidOldImage;
@@ -189,8 +261,8 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
    for (const auto& element_patch : patch_reader.elements()) {
      ElementMatch match = element_patch.element_match();
 +    new_bytes_done += match.new_element.size;
-+    steps.Next(zucchini_rs::kCrc32Share +
-+               (1 - 2 * zucchini_rs::kCrc32Share) * new_bytes_done /
++    steps.Next(kCrc32Share +
++               (1 - 2 * kCrc32Share) * new_bytes_done /
 +                   static_cast<double>(new_image.size()));
      if (!ApplyElement(match.exe_type(), old_image[match.old_element.region()],
                        element_patch, new_image[match.new_element.region()]))
@@ -203,25 +275,35 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
      return status::kStatusInvalidNewImage;
 --- a/components/zucchini/zucchini_gen.cc
 +++ b/components/zucchini/zucchini_gen.cc
-@@ -27,6 +27,7 @@
- #include "components/zucchini/suffix_array.h"
- #include "components/zucchini/targets_affinity.h"
- #include "components/zucchini/zucchini.h"
-+#include "zucchini_rs/progress.h"
+@@ -36,6 +36,17 @@ namespace {
+ constexpr double kMinEquivalenceSimilarity = 12.0;
+ constexpr double kMinLabelAffinity = 64.0;
  
- namespace zucchini {
++// Shares of a step's time that its parts take, so progress rises evenly.
++// Matching elements, of the whole call.
++constexpr double kMatchShare = 0.05;
++// The suffix array, of one equivalence map build (about 0.9 for an executable,
++// 0.8 for raw data).
++constexpr double kSuffixArrayShare = 0.85;
++// Disassembling and indexing both images, of an executable element.
++constexpr double kElementIndexShare = 0.05;
++// Reference and raw deltas, of an executable element.
++constexpr double kElementDeltaShare = 0.02;
++
+ }  // namespace
  
-@@ -61,7 +62,9 @@ EquivalenceMap CreateEquivalenceMap(const ImageIndex& old_image_index,
+ std::vector<offset_t> FindExtraTargets(const TargetPool& projected_old_targets,
+@@ -61,7 +72,9 @@ EquivalenceMap CreateEquivalenceMap(const ImageIndex& old_image_index,
    std::vector<TargetsAffinity> target_affinities(pool_count);
  
    EquivalenceMap equivalence_map;
 +  zucchini_rs::ProgressSteps steps;
    for (int i = 0; i < num_iterations; ++i) {
-+    steps.Next((i + zucchini_rs::kSuffixArrayShare) / num_iterations);
++    steps.Next((i + kSuffixArrayShare) / num_iterations);
      EncodedView old_view(old_image_index);
      EncodedView new_view(new_image_index);
  
-@@ -82,12 +85,14 @@ EquivalenceMap CreateEquivalenceMap(const ImageIndex& old_image_index,
+@@ -82,12 +95,14 @@ EquivalenceMap CreateEquivalenceMap(const ImageIndex& old_image_index,
        old_view.SetLabels(pool_tag, std::move(old_labels), label_bound);
        new_view.SetLabels(pool_tag, std::move(new_labels), label_bound);
      }
@@ -239,20 +321,20 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
    }
  
    return equivalence_map;
-@@ -264,6 +269,8 @@ bool GenerateExecutableElement(ExecutableType exe_type,
+@@ -264,6 +279,8 @@ bool GenerateExecutableElement(ExecutableType exe_type,
                                 ConstBufferView old_image,
                                 ConstBufferView new_image,
                                 PatchElementWriter* patch_writer) {
 +  zucchini_rs::ProgressSteps steps;
-+  steps.Next(zucchini_rs::kElementIndexShare);
++  steps.Next(kElementIndexShare);
    // Initialize Disassemblers.
    std::unique_ptr<Disassembler> old_disasm =
        MakeDisassemblerOfType(old_image, exe_type);
-@@ -285,9 +292,11 @@ bool GenerateExecutableElement(ExecutableType exe_type,
+@@ -285,9 +302,11 @@ bool GenerateExecutableElement(ExecutableType exe_type,
    }
    DCHECK_EQ(old_image_index.PoolCount(), new_image_index.PoolCount());
  
-+  steps.Next(1 - zucchini_rs::kElementDeltaShare);
++  steps.Next(1 - kElementDeltaShare);
    EquivalenceMap equivalences =
        CreateEquivalenceMap(old_image_index, new_image_index,
                             new_disasm->num_equivalence_iterations());
@@ -260,19 +342,19 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
    OffsetMapper offset_mapper(equivalences,
                               base::checked_cast<offset_t>(old_image.size()),
                               base::checked_cast<offset_t>(new_image.size()));
-@@ -332,8 +341,11 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -332,8 +351,11 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
                                    ConstBufferView new_image,
                                    std::unique_ptr<EnsembleMatcher> matcher,
                                    EnsemblePatchWriter* patch_writer) {
 +  zucchini_rs::ProgressSteps steps;
-+  steps.Next(zucchini_rs::kMatchShare);
++  steps.Next(kMatchShare);
    if (!matcher->RunMatch(old_image, new_image)) {
      LOG(INFO) << "RunMatch() failed, generating raw patch.";
 +    steps.Next(1);
      return GenerateBufferRaw(old_image, new_image, patch_writer);
    }
  
-@@ -344,6 +356,7 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -344,6 +366,7 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
    size_t num_elements = matches.size();
    if (num_elements == 0) {
      LOG(INFO) << "No nontrival matches, generating raw patch.";
@@ -280,7 +362,7 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
      return GenerateBufferRaw(old_image, new_image, patch_writer);
    }
  
-@@ -359,6 +372,7 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -359,6 +382,7 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
    // Variables to track element patching successes.
    std::vector<BufferRegion> covered_new_regions;
    size_t covered_new_bytes = 0;
@@ -288,18 +370,18 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
  
    // Process elements first, since non-fatal failures may turn some into gaps.
    for (const ElementMatch& match : matches) {
-@@ -371,6 +385,10 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -371,6 +395,10 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
      DCHECK(it_and_success.second);
      PatchElementWriter& patch_element = it_and_success.first->second;
  
 +    matched_new_bytes += new_region.size;
-+    steps.Next(zucchini_rs::kMatchShare +
-+               (1 - zucchini_rs::kMatchShare) * matched_new_bytes /
++    steps.Next(kMatchShare +
++               (1 - kMatchShare) * matched_new_bytes /
 +                   static_cast<double>(new_image.size()));
      ConstBufferView old_sub_image = old_image[match.old_element.region()];
      ConstBufferView new_sub_image = new_image[new_region];
      if (GenerateExecutableElement(match.exe_type(), old_sub_image,
-@@ -383,11 +401,16 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -383,11 +411,16 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
      }
    }
  
@@ -310,29 +392,29 @@ progress callback cancels; the C API returns ZUCC_CANCELLED. Patches and results
      // |old_sa_raw|, whose lifetime is kept separated from elements' suffix
      // arrays to reduce peak memory.
 +    zucchini_rs::ProgressSteps gap_steps;
-+    gap_steps.Next(zucchini_rs::kSuffixArrayShare);
++    gap_steps.Next(kSuffixArrayShare);
 +    size_t gap_bytes = new_image.size() - covered_new_bytes;
 +    size_t gap_bytes_done = 0;
      Element entire_old_element(old_image.local_region(), kExeTypeNoOp);
      ImageIndex old_image_index(old_image);
      EncodedView old_view_raw(old_image_index);
-@@ -411,6 +434,10 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -411,6 +444,10 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
          DCHECK(it_and_success.second);
          PatchElementWriter& patch_element = it_and_success.first->second;
  
 +        gap_bytes_done += gap_size;
-+        gap_steps.Next(zucchini_rs::kSuffixArrayShare +
-+                       (1 - zucchini_rs::kSuffixArrayShare) * gap_bytes_done /
++        gap_steps.Next(kSuffixArrayShare +
++                       (1 - kSuffixArrayShare) * gap_bytes_done /
 +                           static_cast<double>(gap_bytes));
          ConstBufferView new_sub_image = new_image[{gap_lo, gap_size}];
          if (!GenerateRawElement(old_sa_raw, old_image, new_sub_image,
                                  &patch_element)) {
-@@ -448,11 +475,14 @@ status::Code GenerateBuffer(ConstBufferView old_image,
+@@ -448,11 +485,14 @@ status::Code GenerateBuffer(ConstBufferView old_image,
        LOG(WARNING) << "-start-scan-at option is meaningless under -raw.";
      }
  
 +    zucchini_rs::ProgressSteps steps;
-+    steps.Next(zucchini_rs::kSuffixArrayShare);
++    steps.Next(kSuffixArrayShare);
      ImageIndex old_image_index(old_image);
      EncodedView old_view(old_image_index);
      std::vector<offset_t> old_sa =

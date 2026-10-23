@@ -180,7 +180,7 @@ memory while a vector grows.
  #include <tuple>
  #include <utility>
  #include <vector>
-@@ -217,7 +216,7 @@
+@@ -216,7 +215,7 @@
  
  /******** OffsetMapper ********/
  
@@ -189,7 +189,7 @@ memory while a vector grows.
                             offset_t old_image_size,
                             offset_t new_image_size)
      : equivalences_(std::move(equivalences)),
-@@ -293,7 +292,7 @@
+@@ -292,7 +291,7 @@
                                                  : kOffsetBound - 1;
  }
  
@@ -198,7 +198,7 @@ memory while a vector grows.
    DCHECK(std::is_sorted(offsets->begin(), offsets->end()));
    auto current = equivalences_.begin();
    for (auto& src : *offsets) {
-@@ -312,7 +311,7 @@
+@@ -311,7 +310,7 @@
  }
  
  void OffsetMapper::PruneEquivalencesAndSortBySource(

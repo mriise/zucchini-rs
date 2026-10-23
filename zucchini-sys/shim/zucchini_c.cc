@@ -18,8 +18,9 @@
 #include "components/zucchini/crc32.h"
 #include "components/zucchini/patch_reader.h"
 #include "components/zucchini/patch_writer.h"
+// Declares the progress functions defined below; patches/progress.patch adds them.
+#include "components/zucchini/suffix_array.h"
 #include "components/zucchini/zucchini.h"
-#include "zucchini_rs/progress.h"
 
 static_assert(sizeof(zucc_patch_header) == 20);
 
