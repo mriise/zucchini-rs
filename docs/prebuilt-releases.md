@@ -8,8 +8,7 @@
    `gh attestation verify` on every archive, requiring this repository's prebuilt workflow, the tag
    as source ref and a GitHub-hosted runner. Only then does it write the sums to
    `zucchini-sys/prebuilt.txt`.
-3. Commit `prebuilt.txt`. The `prebuilt` feature now accepts exactly those archives, unless their
-   `BUILD_INFO` lacks a patch that `build.rs` always applies.
+3. Commit `prebuilt.txt`. The `prebuilt` feature now accepts exactly those archives.
 
 Anyone can recheck an archive: `gh attestation verify zucchini-<target>.tar.gz --repo mriise/zucchini-rs`.
 

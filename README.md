@@ -27,7 +27,8 @@ cargo test --workspace
 
 Building from source needs clang.
 
-- [docs/building.md](docs/building.md): the `prebuilt` feature, compilers, environment variables
+- [docs/building.md](docs/building.md): the `prebuilt` feature, the opt-in `progress` and speed-up
+  features, compilers, environment variables
 - [docs/chromium.md](docs/chromium.md): which Chromium files are built, the shims, moving the pin
 - [docs/prebuilt-releases.md](docs/prebuilt-releases.md): how archives are built, attested and pinned
 - [docs/status.md](docs/status.md): what has been verified so far
