@@ -17,13 +17,14 @@ plus the three build flag headers GN would generate. The shims are this reposito
 
 `build.rs` compiles the `zucchini_lib` sources listed in Chromium's own `BUILD.gn`, so a new pin
 needs no source list edits. It applies the unified diffs in `zucchini-sys/patches/` to copies of
-Chromium files, which the compiler finds before the originals. Only the first applies by default;
-each other one needs a source build and its feature, and patches and results are byte-identical with
-or without them:
+Chromium files, which the compiler finds before the originals. The first two always apply; the
+others are written against their result, need a source build and their feature, and leave patches
+and results byte-identical:
 
 | Patch | Feature | Change |
 |---|---|---|
 | `libstdcxx-span.patch` | always | one line of `base/containers/span.h` that needs libstdc++ 15 |
+| `progress.patch` | always | generating, applying and suffix sorting report progress through `zucchini_rs::ProgressSteps` and `ProgressLoop` (`shim/zucchini_rs/progress.h`), which throw out of Zucchini when the C API's progress callback cancels. The shares of time in `progress.h` were measured on a 145 MB PE |
 | `vector-containers.patch` | `vector-containers` | `std::vector` instead of `std::deque` for Zucchini's offset arrays. MSVC's deque stores 16 bytes per block (libc++, which Chromium builds with, stores 4 KiB): applying a patch to a 177 MB PE took 4.75 s with deques and 3.65 s with vectors |
 | `radix-sort.patch` | `radix-sort` | `SortAndUniquify` and `TargetPool::FilterAndProject` sort through `zucchini_rs::Sort` (`shim/zucchini_rs/sort.h`), which radix sorts vectors of 32-bit offsets: the same order, about 0.25 s less of that apply. Written against the vector-containers result |
 | `crc32-hook.patch` | `crc32-hook` | renames `CalculateCrc32` in `crc32.cc`, so the C API's own can call the function `zucc_set_crc32` chose and fall back to Chromium's |

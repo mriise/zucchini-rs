@@ -27,6 +27,7 @@ enum {
   ZUCC_OUT_OF_MEMORY = 102,
   ZUCC_CHECK_FAILED = 103,  /* a Chromium CHECK failed; see zucc_last_error() */
   ZUCC_EMPTY_FILE = 104,    /* Zucchini cannot patch from or to an empty file */
+  ZUCC_CANCELLED = 105,     /* the progress callback asked to stop */
 };
 
 enum {
@@ -62,6 +63,17 @@ typedef struct zucc_patch_header {
 int zucc_generate(const uint8_t* old_data, size_t old_len, const uint8_t* new_data, size_t new_len,
                   const zucc_generate_options* options, zucc_patch** patch_out);
 
+/* Told how far a generate or apply has got, as a percentage from 0 to 100 that never falls. Called
+ * often, on the calling thread, with the same percentage many times over; 100 comes only once the
+ * work has succeeded. Returns nonzero to cancel, and the call then returns ZUCC_CANCELLED. Must not
+ * throw a C++ exception. */
+typedef int (*zucc_progress_fn)(void* context, int percent);
+
+/* zucc_generate, reporting to progress (with context) as it goes. progress may be NULL. */
+int zucc_generate_with_progress(const uint8_t* old_data, size_t old_len, const uint8_t* new_data,
+                                size_t new_len, const zucc_generate_options* options,
+                                zucc_progress_fn progress, void* context, zucc_patch** patch_out);
+
 /* Serialized size of a generated patch in bytes. */
 size_t zucc_patch_size(const zucc_patch* patch);
 
@@ -77,6 +89,11 @@ int zucc_read_header(const uint8_t* patch, size_t patch_len, zucc_patch_header* 
  * new_size bytes. Checks the CRC-32 of both the old file and the result. */
 int zucc_apply(const uint8_t* old_data, size_t old_len, const uint8_t* patch, size_t patch_len,
                uint8_t* new_out, size_t new_len);
+
+/* zucc_apply, reporting to progress (with context) as it goes. progress may be NULL. */
+int zucc_apply_with_progress(const uint8_t* old_data, size_t old_len, const uint8_t* patch,
+                             size_t patch_len, uint8_t* new_out, size_t new_len,
+                             zucc_progress_fn progress, void* context);
 
 /* Message for the calling thread's last ZUCC_CHECK_FAILED or ZUCC_FATAL, or "". Valid until the
  * thread's next call into this API. */

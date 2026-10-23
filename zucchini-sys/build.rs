@@ -29,10 +29,12 @@ const LIB: &str = "zucchini";
 
 /// Unified diffs in `patches/` that build.rs applies, in this order, to copies of Chromium files,
 /// with the Cargo feature that turns each on. Each file's header says what it changes and why.
-/// Only the libstdc++ fix applies by default; the others change Zucchini's code for speed, and
-/// patches and results stay byte-identical with or without them.
+/// The libstdc++ fix and the progress hooks always apply; the others change Zucchini's code for
+/// speed, and patches and results stay byte-identical with or without them. Those are written
+/// against the result of the ones that always apply.
 const PATCHES: &[(&str, Option<&str>)] = &[
     ("libstdcxx-span.patch", None),
+    ("progress.patch", None),
     ("vector-containers.patch", Some("vector-containers")),
     // Written against the vector-containers result; the feature turns that one on too.
     ("radix-sort.patch", Some("radix-sort")),
@@ -85,6 +87,7 @@ fn main() {
             ));
         }
         let dir = prebuilt::fetch(&manifest, &out, &target);
+        prebuilt::check_patches(&dir);
         link(&dir.join("lib"), &target);
         return;
     }
@@ -459,6 +462,31 @@ mod prebuilt {
             .unpack(&dir)
             .unwrap_or_else(|error| fail(&format!("cannot unpack {name}: {error}")));
         dir
+    }
+
+    /// Refuses an unpacked archive built without a patch every build applies, such as one pinned
+    /// before the patch was added: it would lack functions the bindings call.
+    pub fn check_patches(dir: &Path) {
+        let info = fs::read_to_string(dir.join("BUILD_INFO")).unwrap_or_default();
+        let built: Vec<&str> = info
+            .lines()
+            .find_map(|line| line.strip_prefix("patches "))
+            .unwrap_or("")
+            .split_whitespace()
+            .collect();
+        let missing: Vec<&str> = super::PATCHES
+            .iter()
+            .filter(|(name, feature)| feature.is_none() && !built.contains(name))
+            .map(|(name, _)| *name)
+            .collect();
+        if !missing.is_empty() {
+            fail(&format!(
+                "the prebuilt library pinned in prebuilt.txt was built without patches/{}, which this \
+                 zucchini-sys needs\n  Build from source instead: set ZUCCHINI_SYS_FROM_SOURCE=1, or pin a \
+                 newer release with scripts/pin-prebuilt.sh.",
+                missing.join(", patches/")
+            ));
+        }
     }
 
     fn download(url: &str) -> Vec<u8> {
