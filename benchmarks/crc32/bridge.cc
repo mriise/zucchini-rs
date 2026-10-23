@@ -23,11 +23,12 @@ static const Features& Detected() {
 extern "C" int benchmark_avx512_available() { return Detected().avx512 || Detected().avx2; }
 
 // Single-threaded benchmark controls can disable a detected backend, never enable an
-// unsupported ISA. Mode 0 restores detection; mode 1 disables wide folding only.
+// unsupported ISA. Mode 0 restores detection; mode 1 disables AVX-512, AVX2 and PMULL (SSE or
+// scalar CRC only); mode 2 disables only AVX-512.
 extern "C" void benchmark_native_mode(int mode) {
   const auto& detected = Detected();
   x86_cpu_enable_avx512 = mode == 0 ? detected.avx512 : 0;
-  x86_cpu_enable_avx2 = mode == 0 ? detected.avx2 : 0;
+  x86_cpu_enable_avx2 = mode == 0 || mode == 2 ? detected.avx2 : 0;
   x86_cpu_enable_simd = detected.sse;
   arm_cpu_enable_crc32 = detected.crc;
   arm_cpu_enable_pmull = mode == 0 ? detected.pmull : 0;

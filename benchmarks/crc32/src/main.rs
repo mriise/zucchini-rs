@@ -77,19 +77,22 @@ fn main() {
     }
 
     let data = noise(177 * 1024 * 1024);
-    let methods: [(&str, Checksum); 5] = [
-        ("Rust direct", direct_rust),
-        ("Rust callback", rust_callback),
-        ("native narrow", base_zlib),
-        ("native detected", base_zlib),
-        ("original", original),
+    // Each method's last field is the `benchmark_native_mode` it runs under: 0 detected, 1 SSE
+    // only, 2 AVX2 (AVX-512 off). It only affects the native methods.
+    let methods: [(&str, Checksum, i32); 6] = [
+        ("Rust direct", direct_rust, 0),
+        ("Rust callback", rust_callback, 0),
+        ("native sse", base_zlib, 1),
+        ("native avx2", base_zlib, 2),
+        ("native detected", base_zlib, 0),
+        ("original", original, 0),
     ];
     for size in [1024, 1024 * 1024, data.len()] {
         let input = &data[..size];
         let expected = direct_rust(input);
         let mut repeats = Vec::new();
-        for (index, (_, function)) in methods.iter().enumerate() {
-            unsafe { benchmark_native_mode(i32::from(index != 3)) };
+        for (index, (_, function, mode)) in methods.iter().enumerate() {
+            unsafe { benchmark_native_mode(*mode) };
             for _ in 0..3 {
                 assert_eq!(function(black_box(input)), expected);
             }
@@ -103,7 +106,7 @@ fn main() {
         for round in 0..9 {
             for order in 0..methods.len() {
                 let index = (round + order) % methods.len();
-                unsafe { benchmark_native_mode(i32::from(index != 3)) };
+                unsafe { benchmark_native_mode(methods[index].2) };
                 let function = black_box(methods[index].1);
                 let start = Instant::now();
                 for _ in 0..repeats[index] {
@@ -139,24 +142,28 @@ fn main() {
     }
     let patch = zucchini::generate_raw(&old, &new).unwrap();
     println!("Apply fixture: old={} new={} patch={}", old.len(), new.len(), patch.len());
-    let names = ["Rust callback", "native narrow", "native detected", "original"];
+    let names = ["Rust callback", "native sse", "native avx2", "native detected", "original"];
     let select = |method| unsafe {
-        benchmark_native_mode(i32::from(method == 1));
+        benchmark_native_mode(match method {
+            1 => 1,
+            2 => 2,
+            _ => 0,
+        });
         zucchini_sys::zucc_set_crc32(match method {
             0 => Some(rust_crc),
-            1 | 2 => None,
-            3 => Some(benchmark_original),
+            1..=3 => None,
+            4 => Some(benchmark_original),
             _ => unreachable!(),
         });
     };
-    for method in 0..4 {
+    for method in 0..5 {
         select(method);
         assert_eq!(zucchini::apply(&old, &patch).unwrap(), new);
     }
-    let mut samples = vec![Vec::new(); 4];
+    let mut samples = vec![Vec::new(); 5];
     for round in 0..9 {
-        for order in 0..4 {
-            let method = (round + order) % 4;
+        for order in 0..5 {
+            let method = (round + order) % 5;
             select(method);
             let start = Instant::now();
             for _ in 0..3 {
