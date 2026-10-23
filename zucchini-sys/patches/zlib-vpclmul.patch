@@ -28,27 +28,35 @@ see upstream/1-zlib-avx512-detection.patch and 2-zlib-avx2-vpclmul.patch.
  __attribute__((__target__("xsave")))
  #endif
  static void _cpu_check_features(void)
-@@ -192,8 +194,22 @@ static void _cpu_check_features(void)
+@@ -192,8 +194,30 @@ static void _cpu_check_features(void)
                            x86_cpu_has_sse42 &&
                            x86_cpu_has_pclmulqdq;
  
 +#if defined(CRC32_SIMD_AVX512_PCLMUL) || defined(CRC32_SIMD_AVX2_PCLMUL)
-+    /* XGETBV needs XSAVE and OSXSAVE. XSAVE also implies CPUID leaf 7. */
-+    if (!x86_cpu_enable_simd || (abcd[2] & 0x0c000000) != 0x0c000000)
-+        return;
++    /* XGETBV needs XSAVE and OSXSAVE. */
++    if (x86_cpu_enable_simd && (abcd[2] & 0x0c000000) == 0x0c000000) {
 +#ifdef _MSC_VER
-+    __cpuidex(abcd, 7, 0);
++        __cpuid(abcd, 0);
 +#else
-+    __cpuid_count(7, 0, abcd[0], abcd[1], abcd[2], abcd[3]);
++        __cpuid(0, abcd[0], abcd[1], abcd[2], abcd[3]);
++#endif
++        if (abcd[0] >= 7) {
++#ifdef _MSC_VER
++            __cpuidex(abcd, 7, 0);
++#else
++            __cpuid_count(7, 0, abcd[0], abcd[1], abcd[2], abcd[3]);
 +#endif
  #ifdef CRC32_SIMD_AVX512_PCLMUL
 -    x86_cpu_enable_avx512 = _xgetbv(0) & 0x00000040;
-+    x86_cpu_enable_avx512 =
-+        x86_cpu_has_avx512_pclmul(abcd[1], abcd[2], _xgetbv(0));
++            x86_cpu_enable_avx512 = x86_cpu_has_avx512_pclmul(
++                (uint32_t)abcd[1], (uint32_t)abcd[2], _xgetbv(0));
 +#endif
 +#ifdef CRC32_SIMD_AVX2_PCLMUL
-+    x86_cpu_enable_avx2 = x86_cpu_has_avx2_pclmul(abcd[1], abcd[2], _xgetbv(0));
++            x86_cpu_enable_avx2 = x86_cpu_has_avx2_pclmul(
++                (uint32_t)abcd[1], (uint32_t)abcd[2], _xgetbv(0));
 +#endif
++        }
++    }
  #endif
  }
  #endif // x86 & NO_SIMD
@@ -114,16 +122,17 @@ see upstream/1-zlib-avx512-detection.patch and 2-zlib-avx2-vpclmul.patch.
          /* crc32 16-byte chunks */
 --- a/third_party/zlib/crc32_simd.c
 +++ b/third_party/zlib/crc32_simd.c
-@@ -62,7 +62,7 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(  /* AVX512+PCLMUL */
+@@ -62,7 +62,8 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(  /* AVX512+PCLMUL */
      x3 = _mm512_loadu_si512((__m512i *)(buf + 0x80));
      x4 = _mm512_loadu_si512((__m512i *)(buf + 0xC0));
  
 -    x1 = _mm512_xor_si512(x1, _mm512_castsi128_si512(_mm_cvtsi32_si128(crc)));
-+    x1 = _mm512_xor_si512(x1, _mm512_zextsi128_si512(_mm_cvtsi32_si128(crc)));
++    x1 = _mm512_xor_si512(x1, _mm512_inserti32x4(_mm512_setzero_si512(),
++        _mm_cvtsi32_si128(crc), 0));
  
      x0 = _mm512_load_si512((__m512i *)k1k2);
  
-@@ -203,6 +203,172 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(  /* AVX512+PCLMUL */
+@@ -203,6 +204,173 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(  /* AVX512+PCLMUL */
      return _mm_extract_epi32(a1, 1);
  }
  
@@ -172,7 +181,8 @@ see upstream/1-zlib-avx512-detection.patch and 2-zlib-avx2-vpclmul.patch.
 +    x3 = _mm256_loadu_si256((__m256i *)(buf + 0x40));
 +    x4 = _mm256_loadu_si256((__m256i *)(buf + 0x60));
 +
-+    x1 = _mm256_xor_si256(x1, _mm256_zextsi128_si256(_mm_cvtsi32_si128(crc)));
++    x1 = _mm256_xor_si256(x1, _mm256_inserti128_si256(_mm256_setzero_si256(),
++        _mm_cvtsi32_si128(crc), 0));
 +
 +    x0 = _mm256_load_si256((__m256i *)k1k2);
 +

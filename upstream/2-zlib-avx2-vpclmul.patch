@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Melanie Riise <me@mriise.net>
-Date: Fri, 23 Oct 2026 06:43:07 -0700
+Date: Fri, 23 Oct 2026 14:43:32 -0700
 Subject: [PATCH 2/3] [zlib][x86] Add an AVX2 VPCLMULQDQ CRC-32 kernel
 
 VPCLMULQDQ does not require AVX-512: AMD Zen 3 and Intel client parts
@@ -26,12 +26,12 @@ Bug: TODO_FILE_CRBUG
  third_party/zlib/BUILD.gn                     |   5 +-
  third_party/zlib/chromeconf.h                 |   2 +
  .../zlib/contrib/tests/utils_unittest.cc      |  10 +-
- third_party/zlib/cpu_features.c               |  13 +-
+ third_party/zlib/cpu_features.c               |  14 +-
  third_party/zlib/cpu_features.h               |   9 +
  third_party/zlib/crc32.c                      |  13 ++
- third_party/zlib/crc32_simd.c                 | 166 ++++++++++++++++++
+ third_party/zlib/crc32_simd.c                 | 167 ++++++++++++++++++
  third_party/zlib/crc32_simd.h                 |   6 +
- 8 files changed, 219 insertions(+), 5 deletions(-)
+ 8 files changed, 221 insertions(+), 5 deletions(-)
 
 diff --git a/third_party/zlib/BUILD.gn b/third_party/zlib/BUILD.gn
 index 29248e1d..65074c0b 100644
@@ -70,10 +70,10 @@ index e59a8996..44977f1d 100644
  #define riscv_cpu_enable_vclmul Cr_z_riscv_cpu_enable_vclmul
  
 diff --git a/third_party/zlib/contrib/tests/utils_unittest.cc b/third_party/zlib/contrib/tests/utils_unittest.cc
-index f7e0728b..6314c672 100644
+index 14023ac4..79ce9672 100644
 --- a/third_party/zlib/contrib/tests/utils_unittest.cc
 +++ b/third_party/zlib/contrib/tests/utils_unittest.cc
-@@ -38,6 +38,13 @@ TEST(ZlibTest, Avx512CrcCpuSupport) {
+@@ -39,6 +39,13 @@ TEST(ZlibTest, Avx512CrcCpuSupport) {
    EXPECT_FALSE(x86_cpu_has_avx512_pclmul(1u << 16, 1u << 10, 0x06));
  }
  
@@ -87,7 +87,7 @@ index f7e0728b..6314c672 100644
  TEST(ZlibTest, Crc32MatchesBitwiseReference) {
    (void)crc32_z(0, Z_NULL, 0);
    std::vector<unsigned char> bytes(4096 + 64);
-@@ -49,7 +56,8 @@ TEST(ZlibTest, Crc32MatchesBitwiseReference) {
+@@ -50,7 +57,8 @@ TEST(ZlibTest, Crc32MatchesBitwiseReference) {
      byte = static_cast<unsigned char>(random);
    }
    for (size_t offset = 0; offset < 64; ++offset) {
@@ -98,7 +98,7 @@ index f7e0728b..6314c672 100644
          uint32_t expected = ~seed;
          for (size_t i = 0; i < length; ++i) {
 diff --git a/third_party/zlib/cpu_features.c b/third_party/zlib/cpu_features.c
-index 521db166..bb85b61e 100644
+index d04551c5..32025dc5 100644
 --- a/third_party/zlib/cpu_features.c
 +++ b/third_party/zlib/cpu_features.c
 @@ -32,6 +32,7 @@ int ZLIB_INTERNAL x86_cpu_enable_sse2 = 0;
@@ -132,24 +132,24 @@ index 521db166..bb85b61e 100644
  
 -#ifdef CRC32_SIMD_AVX512_PCLMUL
 +#if defined(CRC32_SIMD_AVX512_PCLMUL) || defined(CRC32_SIMD_AVX2_PCLMUL)
-     /* XGETBV needs XSAVE and OSXSAVE. XSAVE also implies CPUID leaf 7. */
-     if (!x86_cpu_enable_simd || (abcd[2] & 0x0c000000) != 0x0c000000)
-         return;
-@@ -201,9 +203,14 @@ static void _cpu_check_features(void)
+     /* XGETBV needs XSAVE and OSXSAVE. */
+     if (x86_cpu_enable_simd && (abcd[2] & 0x0c000000) == 0x0c000000) {
+ #ifdef _MSC_VER
+@@ -206,8 +208,14 @@ static void _cpu_check_features(void)
  #else
-     __cpuid_count(7, 0, abcd[0], abcd[1], abcd[2], abcd[3]);
+             __cpuid_count(7, 0, abcd[0], abcd[1], abcd[2], abcd[3]);
  #endif
 +#ifdef CRC32_SIMD_AVX512_PCLMUL
-     x86_cpu_enable_avx512 =
-         x86_cpu_has_avx512_pclmul(abcd[1], abcd[2], _xgetbv(0));
- #endif
+             x86_cpu_enable_avx512 = x86_cpu_has_avx512_pclmul(
+                 (uint32_t)abcd[1], (uint32_t)abcd[2], _xgetbv(0));
++#endif
 +#ifdef CRC32_SIMD_AVX2_PCLMUL
-+    x86_cpu_enable_avx2 = x86_cpu_has_avx2_pclmul(abcd[1], abcd[2], _xgetbv(0));
++            x86_cpu_enable_avx2 = x86_cpu_has_avx2_pclmul(
++                (uint32_t)abcd[1], (uint32_t)abcd[2], _xgetbv(0));
 +#endif
-+#endif
- }
- #endif // x86 & NO_SIMD
- 
+         }
+     }
+ #endif
 diff --git a/third_party/zlib/cpu_features.h b/third_party/zlib/cpu_features.h
 index 20ee9690..b6d367e7 100644
 --- a/third_party/zlib/cpu_features.h
@@ -202,10 +202,10 @@ index 2ec5ab5c..bab2dc12 100644
      if (x86_cpu_enable_simd && len >= Z_CRC32_SSE42_MINIMUM_LENGTH) {
          /* crc32 16-byte chunks */
 diff --git a/third_party/zlib/crc32_simd.c b/third_party/zlib/crc32_simd.c
-index ff14f834..2e90f346 100644
+index 0e69db4e..0ee4719b 100644
 --- a/third_party/zlib/crc32_simd.c
 +++ b/third_party/zlib/crc32_simd.c
-@@ -203,6 +203,172 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(  /* AVX512+PCLMUL */
+@@ -204,6 +204,173 @@ uint32_t ZLIB_INTERNAL crc32_avx512_simd_(  /* AVX512+PCLMUL */
      return _mm_extract_epi32(a1, 1);
  }
  
@@ -254,7 +254,8 @@ index ff14f834..2e90f346 100644
 +    x3 = _mm256_loadu_si256((__m256i *)(buf + 0x40));
 +    x4 = _mm256_loadu_si256((__m256i *)(buf + 0x60));
 +
-+    x1 = _mm256_xor_si256(x1, _mm256_zextsi128_si256(_mm_cvtsi32_si128(crc)));
++    x1 = _mm256_xor_si256(x1, _mm256_inserti128_si256(_mm256_setzero_si256(),
++        _mm_cvtsi32_si128(crc), 0));
 +
 +    x0 = _mm256_load_si256((__m256i *)k1k2);
 +
