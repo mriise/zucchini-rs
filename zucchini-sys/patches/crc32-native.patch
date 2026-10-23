@@ -1,9 +1,8 @@
-Reuse Chromium base::Crc32 and zlib runtime dispatch without a callback.
-Adapted to the pinned raw-pointer API; see upstream/3-zucchini-base-crc32.patch.
+Reuse Chromium base::Crc32 and zlib runtime dispatch; see upstream/4-zucchini-base-crc32.patch.
 
 --- a/components/zucchini/crc32.cc
 +++ b/components/zucchini/crc32.cc
-@@ -4,42 +4,19 @@
+@@ -4,42 +4,15 @@
  
  #include "components/zucchini/crc32.h"
  
@@ -44,12 +43,8 @@ Adapted to the pinned raw-pointer API; see upstream/3-zucchini-base-crc32.patch.
 -    ret = kCrc32Table[(ret ^ *first) & 0xFF] ^ (ret >> 8);
 -  }
 -  return ret ^ 0xFFFFFFFF;
-+  // Avoid subtracting null pointers for an empty input.
-+  if (first == last)
-+    return 0;
-+  // base::Crc32 returns the uncomplemented running state.
-+  return ~base::Crc32(0xFFFFFFFFU,
-+                     base::span(first, static_cast<size_t>(last - first)));
++  // base::Crc32() takes and returns the uninverted state.
++  return ~base::Crc32(0xFFFFFFFF, base::span(first, last));
  }
  
  }  // namespace zucchini

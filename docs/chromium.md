@@ -26,7 +26,7 @@ or without them:
 | `libstdcxx-span.patch` | always | one line of `base/containers/span.h` that needs libstdc++ 15 |
 | `vector-containers.patch` | `vector-containers` | `std::vector` instead of `std::deque` for Zucchini's offset arrays. MSVC's deque stores 16 bytes per block (libc++, which Chromium builds with, stores 4 KiB): applying a patch to a 177 MB PE took 4.75 s with deques and 3.65 s with vectors |
 | `radix-sort.patch` | `radix-sort` | `SortAndUniquify` and `TargetPool::FilterAndProject` sort through `zucchini_rs::Sort` (`shim/zucchini_rs/sort.h`), which radix sorts vectors of 32-bit offsets: the same order, about 0.25 s less of that apply. Written against the vector-containers result |
-| `crc32-native.patch`, `zlib-avx512.patch` | `crc-fast` | replaces the byte loop with `base::Crc32`, compiled with zlib's CRC-only sources into the same archive. Enables the existing AVX-512/VPCLMUL kernel with full CPU and XCR0 checks; retains SSE, ARM64 and software paths |
+| `crc32-native.patch`, `zlib-vpclmul.patch` | `crc-fast` | replaces the byte loop with `base::Crc32`, compiled with zlib's CRC-only sources into the same archive. Enables the existing AVX-512/VPCLMUL kernel and adds an AVX2+VPCLMUL tier, both behind full CPU and XCR0 checks; retains SSE, ARM64 and software paths |
 | `crc32-hook.patch` | `crc32-hook` | renames `CalculateCrc32` in `crc32.cc`, so the C API can call an explicitly chosen override and fall back to the compiled native CRC or original loop |
 
 Hunks must apply at exactly the lines they name, with every context line matching, so a patch that

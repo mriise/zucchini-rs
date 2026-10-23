@@ -25,7 +25,7 @@
 //!   matters most with MSVC's standard library (about 1.1 s less of a 177 MB PE's apply).
 //! - `radix-sort` (turns on `vector-containers`): radix sorts those arrays (about 0.25 s less).
 //! - `crc32-hook`: `set_crc32` chooses the whole-file CRC-32 implementation.
-//! - `crc-fast`: native Chromium base/zlib CRC with runtime-selected AVX-512/VPCLMUL, SSE,
+//! - `crc-fast`: native Chromium base/zlib CRC with runtime-selected AVX-512 or AVX2 VPCLMUL, SSE,
 //!   ARM64 acceleration or software fallback; no Rust callback or extra crate dependency.
 //!
 //! Gains are largest between builds of the same PE (x86, x64) or little-endian ELF (x86, x86-64,

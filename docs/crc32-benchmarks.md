@@ -1,7 +1,7 @@
 # Native CRC-32: benefits and benchmarks
 
 With `crc-fast`, Zucchini now calls Chromium's existing `base::Crc32`/zlib implementation directly.
-It uses the existing AVX-512/VPCLMUL kernel when the CPU and OS support it, SSE on other x86 CPUs,
+It uses the AVX-512 or AVX2 VPCLMUL kernel when the CPU and OS support it, SSE on other x86 CPUs,
 ARM64 CRC/PMULL on supported platforms, and portable software otherwise. The polynomial, seed,
 final complement and patch-header CRC values remain unchanged.
 
@@ -14,7 +14,7 @@ The main benefits over the previous Rust callback are integration and dependenci
 - The library workspace drops the Rust `crc-fast` dependency and its unused transitive packages.
   Four existing C sources and the base wrapper from the unchanged Chromium pin go into the same
   archive; no external zlib installation or new crate is needed.
-- CPU and OS checks guard the AVX-512 kernel, including VPCLMULQDQ and all required XCR0 state.
+- CPU and OS checks guard the AVX-512 and AVX2 kernels, including VPCLMULQDQ and all required XCR0 state.
   Global AVX flags are unnecessary. The existing ARM and software implementations are reused.
 
 `crc32-hook` remains available for explicit overrides, but `crc-fast` no longer enables it.

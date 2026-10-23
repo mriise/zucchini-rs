@@ -11,6 +11,8 @@ unsafe extern "C" {
     static mut Cr_z_x86_cpu_enable_simd: i32;
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     static mut x86_cpu_enable_avx512: i32;
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    static mut x86_cpu_enable_avx2: i32;
     #[cfg(target_arch = "aarch64")]
     static mut Cr_z_arm_cpu_enable_crc32: i32;
     #[cfg(target_arch = "aarch64")]
@@ -86,9 +88,14 @@ fn native_crc_matches_reference_and_patch_headers() {
     // Only disable detected backends, never enable an unsupported ISA; restore before returning.
     unsafe {
         let avx512 = x86_cpu_enable_avx512;
+        let avx2 = x86_cpu_enable_avx2;
         let simd = Cr_z_x86_cpu_enable_simd;
         x86_cpu_enable_avx512 = 0;
         if avx512 != 0 {
+            check(&bytes);
+        }
+        x86_cpu_enable_avx2 = 0;
+        if avx2 != 0 {
             check(&bytes);
         }
         Cr_z_x86_cpu_enable_simd = 0;
@@ -96,6 +103,7 @@ fn native_crc_matches_reference_and_patch_headers() {
             check(&bytes);
         }
         Cr_z_x86_cpu_enable_simd = simd;
+        x86_cpu_enable_avx2 = avx2;
         x86_cpu_enable_avx512 = avx512;
     }
 

@@ -39,7 +39,7 @@ stops and says so, since prebuilt libraries are built without them. A library li
 | `vector-containers` | `std::vector` instead of `std::deque`: about 1.1 s less with MSVC's standard library; needs contiguous memory for the offset arrays |
 | `radix-sort` | radix sorts the offset arrays (turns on `vector-containers`): about 0.25 s less, for a scratch copy of each array while it sorts |
 | `crc32-hook` | `zucchini::set_crc32` chooses the whole-file CRC-32, through the C API's `zucc_set_crc32` |
-| `crc-fast` | native Chromium base/zlib CRC with runtime-selected AVX-512/VPCLMUL, SSE, ARM64 or software fallback; no Rust callback or extra crate dependency |
+| `crc-fast` | native Chromium base/zlib CRC with runtime-selected AVX-512 or AVX2 VPCLMUL, SSE, ARM64 or software fallback; no Rust callback or extra crate dependency |
 
 `crc-fast` no longer implies `crc32-hook`. Code that calls `set_crc32` must explicitly enable
 `crc32-hook`; `set_crc32(None)` restores the compiled native default when both are enabled.

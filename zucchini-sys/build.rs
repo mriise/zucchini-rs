@@ -37,7 +37,7 @@ const PATCHES: &[(&str, Option<&str>)] = &[
     // Written against the vector-containers result; the feature turns that one on too.
     ("radix-sort.patch", Some("radix-sort")),
     ("crc32-native.patch", Some("crc-fast")),
-    ("zlib-avx512.patch", Some("crc-fast")),
+    ("zlib-vpclmul.patch", Some("crc-fast")),
     ("crc32-hook.patch", Some("crc32-hook")),
 ];
 
@@ -199,6 +199,7 @@ fn build_crc32(chromium: &Path, patched: &Path, target: &str) -> Vec<PathBuf> {
     if arch == "x86" || arch == "x86_64" {
         build.define("CRC32_SIMD_SSE42_PCLMUL", None);
         build.define("CRC32_SIMD_AVX512_PCLMUL", None);
+        build.define("CRC32_SIMD_AVX2_PCLMUL", None);
         // cpu_features.c uses this define to include the non-MSVC CPUID intrinsics.
         build.define("ADLER32_SIMD_SSSE3", None);
         build.define(if os == "windows" { "X86_WINDOWS" } else { "X86_NOT_WINDOWS" }, None);

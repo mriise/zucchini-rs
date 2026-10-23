@@ -69,7 +69,7 @@ fn main() {
     println!("CPU: {}", cpu());
     println!("crc-fast: {}", crc_fast::get_calculator_target(crc_fast::CrcAlgorithm::Crc32IsoHdlc));
     let available = unsafe { benchmark_avx512_available() };
-    println!("Chromium zlib AVX-512 runtime available: {available}");
+    println!("Chromium zlib AVX-512/AVX2 runtime available: {available}");
     // Install the former Rust callback for controlled comparisons. Native checksum calls below
     // bypass this hook and use the actual compiled Zucchini implementation directly.
     unsafe {
