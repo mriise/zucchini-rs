@@ -23,11 +23,11 @@
 //! and results are byte-identical with or without them:
 //!
 //! - `progress`: `generate_with_progress`, `apply_with_progress` and `apply_into_with_progress`
-//!   report the fraction done to a closure each time it crosses a multiple of the `step` they
-//!   take, and stop with [`Error::Cancelled`] when it returns `ControlFlow::Break`. Cancelling
-//!   waits for the next call, so a smaller step cancels sooner, and with a step of 0 the closure
-//!   runs often enough to check a flag another thread sets: on Chromium's test executables and on
-//!   32 MB of raw data, no stretch without a call took more than about 2% of the work.
+//!   report the fraction done to a closure, as often as a `ProgressRate` allows (by default each
+//!   percent, at most every 100 ms), and stop with [`Error::Cancelled`] when it returns
+//!   `ControlFlow::Break`. Zucchini reports between stretches of its work, never inside its
+//!   tightest loops, so it runs as fast as without the feature, and calls can be a second or two
+//!   apart on large files; cancelling waits for the next one.
 //! - `vector-containers`: `std::vector` instead of `std::deque` for Zucchini's offset arrays, which
 //!   matters most with MSVC's standard library (about 1.1 s less of a 177 MB PE's apply).
 //! - `radix-sort` (turns on `vector-containers`): radix sorts those arrays (about 0.25 s less).
@@ -62,7 +62,7 @@ pub use crc32::set_crc32;
 #[cfg(feature = "progress")]
 mod progress;
 #[cfg(feature = "progress")]
-pub use progress::{apply_into_with_progress, apply_with_progress, generate_with_progress};
+pub use progress::{ProgressRate, apply_into_with_progress, apply_with_progress, generate_with_progress};
 
 /// Largest file Zucchini diffs or produces; its patch header stores 32-bit sizes.
 pub const MAX_LEN: usize = u32::MAX as usize;

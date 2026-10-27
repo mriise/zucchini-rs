@@ -2,12 +2,13 @@ Reports progress from Zucchini's long loops and between its steps, and stops the
 progress callback cancels. suffix_array.h, which generating, applying and suffix sorting all reach,
 declares zucchini_rs::ProgressSteps, ProgressLoop and ReportProgress; shim/zucchini_c.cc defines
 them, and they throw zucchini_rs::Cancelled, which the C API returns as ZUCC_CANCELLED. Patches and
-results are unchanged.
+results are unchanged, and so is speed: tight loops run in zucchini_rs::ProgressChunks, reporting
+between chunks with their inner loops as they were, and ProgressLoop checks only loops whose every
+pass already does far more work.
 
 In a file another patch also changes, lines are added only below that patch's hunks, so it still
-applies at the lines it states: crc32.h rather than crc32.cc includes suffix_array.h, and
-ExtendEquivalenceForward, above vector-containers.patch's hunks in equivalence_map.cc, reports
-nothing.
+applies at the lines it states: ExtendEquivalenceForward, above vector-containers.patch's hunks in
+equivalence_map.cc, reports nothing.
 
 --- a/components/zucchini/binary_data_histogram.cc
 +++ b/components/zucchini/binary_data_histogram.cc
@@ -19,43 +20,19 @@ nothing.
  
  namespace zucchini {
  
-@@ -74,7 +75,9 @@ bool BinaryDataHistogram::Compute(ConstBufferView region) {
+@@ -74,8 +75,10 @@ bool BinaryDataHistogram::Compute(ConstBufferView region) {
    size_ = region.size();
    // Number of 2-byte intervals fully contained in |region|.
    size_t bound = size_ - sizeof(uint16_t) + 1;
-+  zucchini_rs::ProgressLoop progress(bound);
-   for (size_t i = 0; i < bound; ++i) {
-+    progress.At(i);
-     UNSAFE_TODO(++histogram_[region.read<uint16_t>(i)]);
+-  for (size_t i = 0; i < bound; ++i) {
+-    UNSAFE_TODO(++histogram_[region.read<uint16_t>(i)]);
++  for (auto [begin, end] : zucchini_rs::ProgressChunks(bound)) {
++    for (size_t i = begin; i < end; ++i) {
++      UNSAFE_TODO(++histogram_[region.read<uint16_t>(i)]);
++    }
    }
    return true;
---- a/components/zucchini/crc32.cc
-+++ b/components/zucchini/crc32.cc
-@@ -36,8 +36,10 @@ uint32_t CalculateCrc32(const uint8_t* first, const uint8_t* last) {
-   static const std::array<uint32_t, 256> kCrc32Table = MakeCrc32Table();
- 
-   uint32_t ret = 0xFFFFFFFF;
--  for (; first != last; UNSAFE_TODO(++first)) {
--    ret = kCrc32Table[(ret ^ *first) & 0xFF] ^ (ret >> 8);
-+  zucchini_rs::ProgressLoop progress(last - first);
-+  for (const uint8_t* it = first; it != last; UNSAFE_TODO(++it)) {
-+    progress.At(it - first);
-+    ret = kCrc32Table[(ret ^ *it) & 0xFF] ^ (ret >> 8);
-   }
-   return ret ^ 0xFFFFFFFF;
  }
---- a/components/zucchini/crc32.h
-+++ b/components/zucchini/crc32.h
-@@ -7,6 +7,9 @@
- 
- #include <stdint.h>
- 
-+// Declares zucchini_rs::ProgressLoop, which CalculateCrc32 reports through.
-+#include "components/zucchini/suffix_array.h"
-+
- namespace zucchini {
- 
- // Calculates CRC-32 of the given range [|first|, |last|).
 --- a/components/zucchini/disassembler_elf.cc
 +++ b/components/zucchini/disassembler_elf.cc
 @@ -16,6 +16,7 @@
@@ -155,28 +132,21 @@ nothing.
    SortByDestination();
    Prune(old_view, new_view, targets_affinities, min_similarity);
  
-@@ -438,8 +443,10 @@ void EquivalenceMap::CreateCandidates(
+@@ -438,12 +443,14 @@ void EquivalenceMap::CreateCandidates(
    // This is an heuristic to find 'good' equivalences on encoded views.
    // Equivalences are found in ascending order of |new_image|.
    offset_t dst_offset = 0;
 +  zucchini_rs::ProgressLoop progress(new_view.size());
  
    while (dst_offset < new_view.size()) {
-+    progress.At(dst_offset);
      if (!new_view.IsToken(dst_offset)) {
        ++dst_offset;
        continue;
-@@ -509,8 +516,10 @@ void EquivalenceMap::Prune(
-     double min_similarity) {
-   // TODO(etiennep): unify with
-   // OffsetMapper::PruneEquivalencesAndSortBySource().
-+  zucchini_rs::ProgressLoop progress(new_view.size());
-   for (auto current = candidates_.begin(); current != candidates_.end();
-        ++current) {
-+    progress.At(current->eq.dst_offset);
-     if (current->similarity < min_similarity)
-       continue;  // This candidate will be discarded anyways.
- 
+     }
++    progress.At(dst_offset);
+     auto match =
+         SuffixLowerBound(old_sa, old_view.begin(),
+                          new_view.begin() + dst_offset, new_view.end());
 --- a/components/zucchini/heuristic_ensemble_matcher.cc
 +++ b/components/zucchini/heuristic_ensemble_matcher.cc
 @@ -19,6 +19,7 @@
@@ -299,7 +269,7 @@ nothing.
  #include <iterator>
  #include <numeric>
  #include <vector>
-@@ -14,6 +15,65 @@
+@@ -14,6 +15,113 @@
  #include "base/compiler_specific.h"
  #include "base/containers/adapters.h"
  
@@ -341,7 +311,8 @@ nothing.
 +void ReportProgress(double fraction);
 +
 +// Reports progress through a loop over [0, |total|) at most about 256 times,
-+// from |start| on.
++// from |start| on. Its check each time round costs too much in a tight loop:
++// use ProgressChunks there.
 +class ProgressLoop {
 + public:
 +  explicit ProgressLoop(uint64_t total, uint64_t start = 0)
@@ -360,49 +331,59 @@ nothing.
 +  uint64_t next_;
 +};
 +
++// Splits [0, |total|) into about 64 chunks, reporting progress at the start of
++// each, so that a tight loop over each chunk runs as it would without reports:
++//   for (auto [begin, end] : zucchini_rs::ProgressChunks(length)) {
++//     for (size_t i = begin; i < end; ++i) ...
++//   }
++class ProgressChunks {
++ public:
++  struct Chunk {
++    uint64_t begin;
++    uint64_t end;
++  };
++
++  class Iterator {
++   public:
++    Iterator(const ProgressChunks& chunks, uint64_t at)
++        : chunks_(chunks), at_(at) {}
++
++    Chunk operator*() const {
++      ReportProgress(static_cast<double>(at_) / chunks_.total_);
++      return {at_, Next()};
++    }
++    Iterator& operator++() {
++      at_ = Next();
++      return *this;
++    }
++    bool operator!=(const Iterator& other) const { return at_ != other.at_; }
++
++   private:
++    uint64_t Next() const {
++      return std::min(at_ + chunks_.size_, chunks_.total_);
++    }
++
++    const ProgressChunks& chunks_;
++    uint64_t at_;
++  };
++
++  explicit ProgressChunks(uint64_t total)
++      : total_(total), size_(total / 64 + 1) {}
++
++  Iterator begin() const { return Iterator(*this, 0); }
++  Iterator end() const { return Iterator(*this, total_); }
++
++ private:
++  uint64_t total_;
++  uint64_t size_;
++};
++
 +}  // namespace zucchini_rs
 +
  namespace zucchini {
  
  // A functor class that implements the naive suffix sorting algorithm that uses
-@@ -127,6 +187,7 @@ class InducedSuffixSort {
- 
-       // Initialized to dummy, impossible key.
-       key_type previous_key = key_bound;
-+      zucchini_rs::ProgressLoop progress(length);
- 
-       // We're travelling backward to determine the partition,
-       // as if we prepend one character at a time to the string, ex:
-@@ -137,6 +198,7 @@ class InducedSuffixSort {
-       for (auto str_it = std::reverse_iterator<StrIt>(str + length);
-            str_it != std::reverse_iterator<StrIt>(str);
-            ++str_it, ++sl_partition_it) {
-+        progress.At(length - (str_it.base() - str));
-         key_type current_key = *str_it;
- 
-         if (current_key > previous_key || previous_key == key_bound) {
-@@ -168,7 +230,9 @@ class InducedSuffixSort {
-       // |previous_type| is initialized to S-type to avoid counting an extra
-       // LMS suffix at the beginning
-       SLType previous_type = SType;
-+      zucchini_rs::ProgressLoop progress(sl_partition.size());
-       for (size_type i = 0; i < sl_partition.size(); ++i) {
-+        progress.At(i);
-         if (sl_partition[i] == SType && previous_type == LType)
-           *lms_indices++ = i;
-         previous_type = sl_partition[i];
-@@ -181,8 +245,10 @@ class InducedSuffixSort {
-                                                   key_type key_bound) {
-       // Occurrence of every unique character is counted in |buckets|
-       std::vector<size_type> buckets(static_cast<size_type>(key_bound));
-+      zucchini_rs::ProgressLoop progress(length);
- 
-       for (auto it = str; it != UNSAFE_TODO(str + length); UNSAFE_TODO(++it)) {
-+        progress.At(it - str);
-         ++buckets[*it];
-       }
-       return buckets;
-@@ -197,6 +263,10 @@ class InducedSuffixSort {
+@@ -197,6 +305,10 @@ class InducedSuffixSort {
                              const std::vector<size_type>& lms_indices,
                              const std::vector<size_type>& buckets,
                              SAIt suffix_array) {
@@ -413,51 +394,168 @@ nothing.
        // All indices are first marked as unset with the illegal value |length|.
        std::fill(suffix_array, suffix_array + length, length);
  
-@@ -212,7 +282,10 @@ class InducedSuffixSort {
- 
-       // Process each |lms_indices| backward, and assign them to the end of
-       // their respective buckets, so relative order is preserved.
-+      zucchini_rs::ProgressLoop placed(lms_indices.size());
-+      size_t placed_count = 0;
-       for (size_t lms_index : base::Reversed(lms_indices)) {
-+        placed.At(placed_count++);
-         key_type key = str[lms_index];
-         suffix_array[--bucket_bounds[key]] = lms_index;
-       }
-@@ -239,7 +312,10 @@ class InducedSuffixSort {
+@@ -239,16 +351,19 @@ class InducedSuffixSort {
          key_type key = str[length - 1];
          suffix_array[bucket_bounds[key]++] = length - 1;
        }
+-      for (auto it = suffix_array; it != suffix_array + length; ++it) {
+-        size_type suffix_index = *it;
+-
+-        // While the original algorithm marks unset suffixes with -1,
+-        // we found that marking them with |length| is also possible and more
+-        // convenient because we are working with unsigned integers.
+-        if (suffix_index != length && suffix_index > 0 &&
+-            sl_partition[--suffix_index] == LType) {
+-          key_type key = str[suffix_index];
+-          suffix_array[bucket_bounds[key]++] = suffix_index;
 +      steps.Next(kShares[1]);
-+      zucchini_rs::ProgressLoop forward(length);
-       for (auto it = suffix_array; it != suffix_array + length; ++it) {
-+        forward.At(it - suffix_array);
-         size_type suffix_index = *it;
++      for (auto [begin, end] : zucchini_rs::ProgressChunks(length)) {
++        for (auto it = suffix_array + begin; it != suffix_array + end; ++it) {
++          size_type suffix_index = *it;
++
++          // While the original algorithm marks unset suffixes with -1,
++          // we found that marking them with |length| is also possible and more
++          // convenient because we are working with unsigned integers.
++          if (suffix_index != length && suffix_index > 0 &&
++              sl_partition[--suffix_index] == LType) {
++            key_type key = str[suffix_index];
++            suffix_array[bucket_bounds[key]++] = suffix_index;
++          }
+         }
+       }
  
-         // While the original algorithm marks unset suffixes with -1,
-@@ -264,8 +340,11 @@ class InducedSuffixSort {
+@@ -264,13 +379,18 @@ class InducedSuffixSort {
        // be updated.
        std::partial_sum(buckets.begin(), buckets.end(), bucket_bounds.begin());
  
+-      for (auto it = std::reverse_iterator<SAIt>(suffix_array + length);
+-           it != std::reverse_iterator<SAIt>(suffix_array); ++it) {
+-        size_type suffix_index = *it;
+-        if (suffix_index != length && suffix_index > 0 &&
+-            sl_partition[--suffix_index] == SType) {
+-          key_type key = str[suffix_index];
+-          suffix_array[--bucket_bounds[key]] = suffix_index;
 +      steps.Next(1);
-+      zucchini_rs::ProgressLoop backward(length);
-       for (auto it = std::reverse_iterator<SAIt>(suffix_array + length);
-            it != std::reverse_iterator<SAIt>(suffix_array); ++it) {
-+        backward.At(length - (it.base() - suffix_array));
-         size_type suffix_index = *it;
-         if (suffix_index != length && suffix_index > 0 &&
-             sl_partition[--suffix_index] == SType) {
-@@ -301,7 +380,9 @@ class InducedSuffixSort {
++      for (auto [begin, end] : zucchini_rs::ProgressChunks(length)) {
++        for (auto it =
++                 std::reverse_iterator<SAIt>(suffix_array + length - begin);
++             it != std::reverse_iterator<SAIt>(suffix_array + length - end);
++             ++it) {
++          size_type suffix_index = *it;
++          if (suffix_index != length && suffix_index > 0 &&
++              sl_partition[--suffix_index] == SType) {
++            key_type key = str[suffix_index];
++            suffix_array[--bucket_bounds[key]] = suffix_index;
++          }
+         }
+       }
+       // Deals with the last suffix, because of the sentinel.
+@@ -301,55 +421,58 @@ class InducedSuffixSort {
        // Note that suf(S,0) is never a LMS suffix. Substrings will be visited in
        // lexicographical order.
        size_type previous_lms = 0;
-+      zucchini_rs::ProgressLoop progress(length);
-       for (auto it = suffix_array; it != suffix_array + length; ++it) {
-+        progress.At(it - suffix_array);
-         if (*it > 0 && sl_partition[*it] == SType &&
-             sl_partition[*it - 1] == LType) {
-           // suf(S, *it) is a LMS suffix.
-@@ -369,9 +450,14 @@ class InducedSuffixSort {
+-      for (auto it = suffix_array; it != suffix_array + length; ++it) {
+-        if (*it > 0 && sl_partition[*it] == SType &&
+-            sl_partition[*it - 1] == LType) {
+-          // suf(S, *it) is a LMS suffix.
+-
+-          size_type current_lms = *it;
+-          if (previous_lms != 0) {
+-            // There was a previous LMS suffix. Check if the current LMS
+-            // substring is equal to the previous one.
+-            SLType current_lms_type = SType;
+-            SLType previous_lms_type = SType;
+-            for (size_type k = 0;; ++k) {
+-              // |current_lms_end| and |previous_lms_end| denote whether we have
+-              // reached the end of the current and previous LMS substring,
+-              // respectively
+-              bool current_lms_end = false;
+-              bool previous_lms_end = false;
+-
+-              // Check for both previous and current substring ends.
+-              // Note that it is more convenient to check if
+-              // suf(S,current_lms + k) is an LMS suffix than to retrieve it
+-              // from lms_indices.
+-              if (current_lms + k >= length ||
+-                  (current_lms_type == LType &&
+-                   sl_partition[current_lms + k] == SType)) {
+-                current_lms_end = true;
++      for (auto [begin, end] : zucchini_rs::ProgressChunks(length)) {
++        for (auto it = suffix_array + begin; it != suffix_array + end; ++it) {
++          if (*it > 0 && sl_partition[*it] == SType &&
++              sl_partition[*it - 1] == LType) {
++            // suf(S, *it) is a LMS suffix.
++
++            size_type current_lms = *it;
++            if (previous_lms != 0) {
++              // There was a previous LMS suffix. Check if the current LMS
++              // substring is equal to the previous one.
++              SLType current_lms_type = SType;
++              SLType previous_lms_type = SType;
++              for (size_type k = 0;; ++k) {
++                // |current_lms_end| and |previous_lms_end| denote whether we
++                // have reached the end of the current and previous LMS
++                // substring, respectively
++                bool current_lms_end = false;
++                bool previous_lms_end = false;
++
++                // Check for both previous and current substring ends.
++                // Note that it is more convenient to check if
++                // suf(S,current_lms + k) is an LMS suffix than to retrieve it
++                // from lms_indices.
++                if (current_lms + k >= length ||
++                    (current_lms_type == LType &&
++                     sl_partition[current_lms + k] == SType)) {
++                  current_lms_end = true;
++                }
++                if (previous_lms + k >= length ||
++                    (previous_lms_type == LType &&
++                     sl_partition[previous_lms + k] == SType)) {
++                  previous_lms_end = true;
++                }
++
++                if (current_lms_end && previous_lms_end) {
++                  break;  // Previous and current substrings are identical.
++                } else if (current_lms_end != previous_lms_end ||
++                           str[current_lms + k] != str[previous_lms + k]) {
++                  // Previous and current substrings differ, a new label is
++                  // used.
++                  ++label;
++                  break;
++                }
++
++                current_lms_type = sl_partition[current_lms + k];
++                previous_lms_type = sl_partition[previous_lms + k];
+               }
+-              if (previous_lms + k >= length ||
+-                  (previous_lms_type == LType &&
+-                   sl_partition[previous_lms + k] == SType)) {
+-                previous_lms_end = true;
+-              }
+-
+-              if (current_lms_end && previous_lms_end) {
+-                break;  // Previous and current substrings are identical.
+-              } else if (current_lms_end != previous_lms_end ||
+-                         str[current_lms + k] != str[previous_lms + k]) {
+-                // Previous and current substrings differ, a new label is used.
+-                ++label;
+-                break;
+-              }
+-
+-              current_lms_type = sl_partition[current_lms + k];
+-              previous_lms_type = sl_partition[previous_lms + k];
+             }
++            *lms_indices++ = *it;
++            *lms_str++ = label;
++            previous_lms = current_lms;
+           }
+-          *lms_indices++ = *it;
+-          *lms_str++ = label;
+-          previous_lms = current_lms;
+         }
+       }
+ 
+@@ -369,9 +492,14 @@ class InducedSuffixSort {
        if (length < 2)
          return;
  
@@ -472,7 +570,7 @@ nothing.
        std::vector<size_type> lms_indices(lms_count);
        FindLmsSuffixes(sl_partition, lms_indices.begin());
        std::vector<size_type> buckets = MakeBucketCount(str, length, key_bound);
-@@ -379,12 +465,14 @@ class InducedSuffixSort {
+@@ -379,12 +507,14 @@ class InducedSuffixSort {
        if (lms_indices.size() > 1) {
          // Given |lms_indices| in the same order they appear in |str|, induce
          // LMS substrings relative order and write result to |suffix_array|.
@@ -487,26 +585,15 @@ nothing.
          size_type label_count =
              LabelLmsSubstrings(str, length, sl_partition, suffix_array,
                                 lms_indices.begin(), lms_str.begin());
-@@ -392,11 +480,17 @@ class InducedSuffixSort {
+@@ -392,6 +522,7 @@ class InducedSuffixSort {
          if (label_count < lms_str.size()) {
            // Reorder |lms_str| to have LMS suffixes in the same order they
            // appear in |str|.
--          for (size_type i = 0; i < lms_indices.size(); ++i)
 +          steps.Next(kShares[4]);
-+          zucchini_rs::ProgressLoop reordered(lms_indices.size());
-+          for (size_type i = 0; i < lms_indices.size(); ++i) {
-+            reordered.At(i);
+           for (size_type i = 0; i < lms_indices.size(); ++i)
              suffix_array[lms_indices[i]] = lms_str[i];
-+          }
  
-           SLType previous_type = SType;
-+          zucchini_rs::ProgressLoop gathered(sl_partition.size());
-           for (size_type i = 0, j = 0; i < sl_partition.size(); ++i) {
-+            gathered.At(i);
-             if (sl_partition[i] == SType && previous_type == LType) {
-               lms_str[j] = suffix_array[i];
-               lms_indices[j++] = i;
-@@ -408,14 +502,19 @@ class InducedSuffixSort {
+@@ -408,12 +539,14 @@ class InducedSuffixSort {
            // labeled LMS suffixes in the same order they appear in |str|.
            // Note that |KeyType| will be size_type because |lms_str| contains
            // indices. |lms_str| is at most half the length of |str|.
@@ -517,17 +604,11 @@ nothing.
  
            // Map LMS labels back to indices in |str| and write result to
            // |lms_indices|. We're using |suffix_array| as a temporary buffer.
--          for (size_type i = 0; i < lms_indices.size(); ++i)
 +          steps.Next(kShares[6]);
-+          zucchini_rs::ProgressLoop mapped(lms_indices.size());
-+          for (size_type i = 0; i < lms_indices.size(); ++i) {
-+            mapped.At(i);
+           for (size_type i = 0; i < lms_indices.size(); ++i)
              suffix_array[i] = lms_indices[suffix_array[i]];
-+          }
            std::copy_n(suffix_array, lms_indices.size(), lms_indices.begin());
- 
-           // At this point, |lms_indices| contains sorted LMS suffixes of |str|.
-@@ -423,6 +522,7 @@ class InducedSuffixSort {
+@@ -423,6 +556,7 @@ class InducedSuffixSort {
        }
        // Given |lms_indices| where LMS suffixes are sorted, induce the full
        // order of suffixes in |str|.
@@ -706,21 +787,7 @@ nothing.
    }
  
    return equivalence_map;
-@@ -131,11 +148,13 @@ bool GenerateRawDelta(
-   // Visit |equivalence_map| blocks in |new_image| order. Find and emit all
-   // bytewise differences.
-   offset_t base_copy_offset = 0;
-+  zucchini_rs::ProgressLoop progress(new_image.size());
-   for (const EquivalenceCandidate& candidate : equivalence_map) {
-     Equivalence equivalence = candidate.eq;
-     // For each bytewise delta from |old_image| to |new_image|, compute "copy
-     // offset" and pass it along with delta to the sink.
-     for (offset_t i = 0; i < equivalence.length;) {
-+      progress.At(equivalence.dst_offset + i);
-       if (new_image_index.IsReference(equivalence.dst_offset + i)) {
-         DCHECK(new_image_index.IsToken(equivalence.dst_offset + i));
-         TypeTag type_tag =
-@@ -243,6 +262,8 @@ bool GenerateRawElement(const std::vector<offset_t>& old_sa,
+@@ -243,6 +260,8 @@ bool GenerateRawElement(const std::vector<offset_t>& old_sa,
                          ConstBufferView old_image,
                          ConstBufferView new_image,
                          PatchElementWriter* patch_writer) {
@@ -729,7 +796,7 @@ nothing.
    ImageIndex old_image_index(old_image);
    ImageIndex new_image_index(new_image);
  
-@@ -251,6 +272,7 @@ bool GenerateRawElement(const std::vector<offset_t>& old_sa,
+@@ -251,6 +270,7 @@ bool GenerateRawElement(const std::vector<offset_t>& old_sa,
                       EncodedView(new_image_index), {},
                       kMinEquivalenceSimilarity);
  
@@ -737,7 +804,7 @@ nothing.
    patch_writer->SetReferenceDeltaSink({});
  
    std::map<TypeTag, std::unique_ptr<ReferenceMixer>> reference_mixers;
-@@ -264,6 +286,8 @@ bool GenerateExecutableElement(ExecutableType exe_type,
+@@ -264,6 +284,8 @@ bool GenerateExecutableElement(ExecutableType exe_type,
                                 ConstBufferView old_image,
                                 ConstBufferView new_image,
                                 PatchElementWriter* patch_writer) {
@@ -746,7 +813,7 @@ nothing.
    // Initialize Disassemblers.
    std::unique_ptr<Disassembler> old_disasm =
        MakeDisassemblerOfType(old_image, exe_type);
-@@ -278,16 +302,19 @@ bool GenerateExecutableElement(ExecutableType exe_type,
+@@ -278,16 +300,19 @@ bool GenerateExecutableElement(ExecutableType exe_type,
    // Initialize ImageIndexes.
    ImageIndex old_image_index(old_image);
    ImageIndex new_image_index(new_image);
@@ -768,7 +835,7 @@ nothing.
    OffsetMapper offset_mapper(equivalences,
                               base::checked_cast<offset_t>(old_image.size()),
                               base::checked_cast<offset_t>(new_image.size()));
-@@ -332,8 +359,11 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -332,8 +357,11 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
                                    ConstBufferView new_image,
                                    std::unique_ptr<EnsembleMatcher> matcher,
                                    EnsemblePatchWriter* patch_writer) {
@@ -780,7 +847,7 @@ nothing.
      return GenerateBufferRaw(old_image, new_image, patch_writer);
    }
  
-@@ -344,6 +374,7 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -344,6 +372,7 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
    size_t num_elements = matches.size();
    if (num_elements == 0) {
      LOG(INFO) << "No nontrival matches, generating raw patch.";
@@ -788,7 +855,7 @@ nothing.
      return GenerateBufferRaw(old_image, new_image, patch_writer);
    }
  
-@@ -359,6 +390,7 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -359,6 +388,7 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
    // Variables to track element patching successes.
    std::vector<BufferRegion> covered_new_regions;
    size_t covered_new_bytes = 0;
@@ -796,7 +863,7 @@ nothing.
  
    // Process elements first, since non-fatal failures may turn some into gaps.
    for (const ElementMatch& match : matches) {
-@@ -371,6 +403,10 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -371,6 +401,10 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
      DCHECK(it_and_success.second);
      PatchElementWriter& patch_element = it_and_success.first->second;
  
@@ -807,7 +874,7 @@ nothing.
      ConstBufferView old_sub_image = old_image[match.old_element.region()];
      ConstBufferView new_sub_image = new_image[new_region];
      if (GenerateExecutableElement(match.exe_type(), old_sub_image,
-@@ -383,11 +419,16 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -383,11 +417,16 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
      }
    }
  
@@ -824,7 +891,7 @@ nothing.
      Element entire_old_element(old_image.local_region(), kExeTypeNoOp);
      ImageIndex old_image_index(old_image);
      EncodedView old_view_raw(old_image_index);
-@@ -411,6 +452,10 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
+@@ -411,6 +450,10 @@ status::Code GenerateBufferCommon(ConstBufferView old_image,
          DCHECK(it_and_success.second);
          PatchElementWriter& patch_element = it_and_success.first->second;
  
@@ -835,7 +902,7 @@ nothing.
          ConstBufferView new_sub_image = new_image[{gap_lo, gap_size}];
          if (!GenerateRawElement(old_sa_raw, old_image, new_sub_image,
                                  &patch_element)) {
-@@ -448,11 +493,14 @@ status::Code GenerateBuffer(ConstBufferView old_image,
+@@ -448,11 +491,14 @@ status::Code GenerateBuffer(ConstBufferView old_image,
        LOG(WARNING) << "-start-scan-at option is meaningless under -raw.";
      }
  

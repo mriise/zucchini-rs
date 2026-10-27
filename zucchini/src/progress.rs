@@ -6,24 +6,43 @@ use std::ffi::{c_int, c_void};
 use std::ops::ControlFlow;
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr;
+use std::time::Duration;
 
 use zucchini_sys as sys;
 
 use crate::{Error, GenerateOptions};
 
+/// How often the progress closure runs: when the fraction done crosses a multiple of `step`, but
+/// no sooner than `min_interval` after the last call. The default, each percent at most every
+/// 100 ms, keeps calls rare enough to cost nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProgressRate {
+    /// 0.01 for each percent, 0 for every move.
+    pub step: f64,
+    /// [`Duration::ZERO`] for no limit.
+    pub min_interval: Duration,
+}
+
+impl Default for ProgressRate {
+    fn default() -> Self {
+        ProgressRate { step: 0.01, min_interval: Duration::from_millis(100) }
+    }
+}
+
 /// Makes a patch like [`generate_with`](crate::generate_with), calling `progress` with the
 /// fraction done as it goes.
 ///
-/// `progress` runs on this thread with a fraction from 0 to 1 that rises with each call: 0 first,
-/// then each time the work crosses a multiple of `step` (0.01 for each percent, 0 for every move),
-/// and 1 only once the patch is made. Returning [`ControlFlow::Break`] stops the work with
-/// [`Error::Cancelled`], though only at a call, so a large `step` cancels late. A panic in
-/// `progress` stops it too, and resumes once Zucchini has unwound.
+/// `progress` runs on this thread, as often as `rate` allows, with a fraction from 0 to 1 that
+/// rises with each call: 0 first, and 1 only once the patch is made. Zucchini reports between
+/// stretches of its work rather than through its tightest loops, so calls can be a second or two
+/// apart on large files. Returning [`ControlFlow::Break`] stops the work with
+/// [`Error::Cancelled`] at that call. A panic in `progress` stops it too, and resumes once Zucchini
+/// has unwound.
 pub fn generate_with_progress(
     old: &[u8],
     new: &[u8],
     options: &GenerateOptions,
-    step: f64,
+    rate: ProgressRate,
     mut progress: impl FnMut(f64) -> ControlFlow<()>,
 ) -> Result<Vec<u8>, Error> {
     crate::generate_inner(old, new, options, |c_options, handle| {
@@ -40,7 +59,8 @@ pub fn generate_with_progress(
                     c_options,
                     Some(callback),
                     context,
-                    step,
+                    rate.step,
+                    rate.min_interval.as_secs_f64(),
                     handle,
                 )
             }
@@ -50,26 +70,26 @@ pub fn generate_with_progress(
 
 /// Applies `patch` to `old` like [`apply_bounded`](crate::apply_bounded) (pass
 /// [`MAX_LEN`](crate::MAX_LEN) for [`apply`](crate::apply)'s bound), calling `progress` with the
-/// fraction done every `step` as [`generate_with_progress`] does.
+/// fraction done as [`generate_with_progress`] does.
 pub fn apply_with_progress(
     old: &[u8],
     patch: &[u8],
     max_new: usize,
-    step: f64,
+    rate: ProgressRate,
     mut progress: impl FnMut(f64) -> ControlFlow<()>,
 ) -> Result<Vec<u8>, Error> {
     crate::apply_bounded_inner(old, patch, max_new, |new| {
-        apply_into_with_progress(old, patch, new, step, &mut progress)
+        apply_into_with_progress(old, patch, new, rate, &mut progress)
     })
 }
 
 /// Applies `patch` to `old` like [`apply_into`](crate::apply_into), calling `progress` with the
-/// fraction done every `step` as [`generate_with_progress`] does.
+/// fraction done as [`generate_with_progress`] does.
 pub fn apply_into_with_progress(
     old: &[u8],
     patch: &[u8],
     new: &mut [u8],
-    step: f64,
+    rate: ProgressRate,
     mut progress: impl FnMut(f64) -> ControlFlow<()>,
 ) -> Result<(), Error> {
     crate::apply_into_inner(patch, new, |new| {
@@ -86,7 +106,8 @@ pub fn apply_into_with_progress(
                     new.len(),
                     Some(callback),
                     context,
-                    step,
+                    rate.step,
+                    rate.min_interval.as_secs_f64(),
                 )
             }
         })

@@ -5,10 +5,11 @@
 use std::ops::ControlFlow;
 use std::panic;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use zucchini::{
-    Error, GenerateOptions, MAX_LEN, apply, apply_into_with_progress, apply_with_progress, generate,
-    generate_with, generate_with_progress,
+    Error, GenerateOptions, MAX_LEN, ProgressRate, apply, apply_into_with_progress, apply_with_progress,
+    generate, generate_with, generate_with_progress,
 };
 
 fn testdata(name: &str) -> Vec<u8> {
@@ -37,8 +38,11 @@ fn exe_pair() -> (Vec<u8>, Vec<u8>) {
     (testdata("chrome64_1.exe"), testdata("chrome64_2.exe"))
 }
 
-/// Reports every percent.
-const STEP: f64 = 0.01;
+/// Reports every percent, with no time limit, so that small files report many times.
+const STEP: ProgressRate = ProgressRate { step: 0.01, min_interval: Duration::ZERO };
+
+/// Reports every move.
+const EVERY: ProgressRate = ProgressRate { step: 0.0, min_interval: Duration::ZERO };
 
 /// Checks one run's reports at `STEP`: from 0, each in a later percent than the last, ending at a
 /// single 1, through many steps.
@@ -48,7 +52,7 @@ fn check_reports(reports: &[f64]) {
     assert!(percents.windows(2).all(|pair| pair[0] < pair[1]), "reports repeat a percent: {reports:?}");
     assert_eq!(reports.iter().filter(|&&done| done >= 1.0).count(), 1);
     assert_eq!(reports.last(), Some(&1.0));
-    assert!(reports.len() > 60, "only {} reports: {reports:?}", reports.len());
+    assert!(reports.len() > 30, "only {} reports: {reports:?}", reports.len());
 }
 
 #[test]
@@ -94,21 +98,39 @@ fn apply_reports_progress_and_makes_the_same_file() {
 fn a_step_of_zero_reports_every_move_and_a_large_one_only_the_ends() {
     let (old, new) = exe_pair();
     let mut every = Vec::new();
-    generate_with_progress(&old, &new, &GenerateOptions::default(), 0.0, |done| {
+    generate_with_progress(&old, &new, &GenerateOptions::default(), EVERY, |done| {
         every.push(done);
         ControlFlow::Continue(())
     })
     .unwrap();
     assert!(every.windows(2).all(|pair| pair[0] < pair[1]), "reports did not rise: {every:?}");
-    assert!(every.len() > 1000, "only {} reports", every.len());
+    assert!(every.len() > 100, "only {} reports", every.len());
 
     let mut ends = Vec::new();
-    generate_with_progress(&old, &new, &GenerateOptions::default(), 2.0, |done| {
+    let ends_only = ProgressRate { step: 2.0, ..EVERY };
+    generate_with_progress(&old, &new, &GenerateOptions::default(), ends_only, |done| {
         ends.push(done);
         ControlFlow::Continue(())
     })
     .unwrap();
     assert_eq!(ends, [0.0, 1.0]);
+}
+
+#[test]
+fn the_default_rate_waits_between_calls_but_always_reports_the_end() {
+    let (old, new) = exe_pair();
+    let min_interval = ProgressRate::default().min_interval;
+    let mut calls = Vec::new();
+    generate_with_progress(&old, &new, &GenerateOptions::default(), ProgressRate::default(), |done| {
+        calls.push((Instant::now(), done));
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+    assert_eq!(calls.first().map(|call| call.1), Some(0.0));
+    assert_eq!(calls.last().map(|call| call.1), Some(1.0));
+    // Every call but the last, which always comes, waits out the interval.
+    let spaced = &calls[..calls.len() - 1];
+    assert!(spaced.windows(2).all(|pair| pair[1].0 - pair[0].0 >= min_interval), "{calls:?}");
 }
 
 #[test]
@@ -164,7 +186,7 @@ fn zucchini_can_be_called_from_inside_progress() {
         if done >= 0.5 && inner == 0 {
             inner += 1;
             let inner_patch =
-                generate_with_progress(&small, &old[..20_000], &GenerateOptions::default(), 0.0, |_| {
+                generate_with_progress(&small, &old[..20_000], &GenerateOptions::default(), EVERY, |_| {
                     ControlFlow::Continue(())
                 })
                 .unwrap();

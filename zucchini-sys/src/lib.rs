@@ -60,8 +60,8 @@ pub struct zucc_patch_header {
 
 /// Told how far a generate or apply has got, as a fraction from 0 to 1 that rises with each call.
 /// Called on the calling thread with 0 first, then each time the work crosses a multiple of the
-/// call's step (each time it moves at all for a step of 0), and with 1 only once the work has
-/// succeeded. Returns nonzero to cancel, and the call then returns `ZUCC_CANCELLED`. Must not
+/// call's step (each time it moves at all for a step of 0), at least `min_interval` seconds after
+/// the last call, and with 1 only once the work has succeeded. Returns nonzero to cancel, and the call then returns `ZUCC_CANCELLED`. Must not
 /// unwind.
 pub type zucc_progress_fn = unsafe extern "C" fn(context: *mut c_void, done: f64) -> c_int;
 
@@ -77,8 +77,8 @@ unsafe extern "C" {
         options: *const zucc_generate_options,
         patch_out: *mut *mut zucc_patch,
     ) -> c_int;
-    /// `zucc_generate`, reporting to `progress` (with `context`) as it goes, every `step`. Only in
-    /// a library built with the `progress` feature.
+    /// `zucc_generate`, reporting to `progress` (with `context`) as it goes, every `step` and at
+    /// most once each `min_interval` seconds. Only in a library built with the `progress` feature.
     #[cfg(feature = "progress")]
     pub fn zucc_generate_with_progress(
         old_data: *const u8,
@@ -89,6 +89,7 @@ unsafe extern "C" {
         progress: Option<zucc_progress_fn>,
         context: *mut c_void,
         step: f64,
+        min_interval: f64,
         patch_out: *mut *mut zucc_patch,
     ) -> c_int;
     pub fn zucc_patch_size(patch: *const zucc_patch) -> usize;
@@ -103,8 +104,8 @@ unsafe extern "C" {
         new_out: *mut u8,
         new_len: usize,
     ) -> c_int;
-    /// `zucc_apply`, reporting to `progress` (with `context`) as it goes, every `step`. Only in a
-    /// library built with the `progress` feature.
+    /// `zucc_apply`, reporting to `progress` (with `context`) as it goes, as
+    /// `zucc_generate_with_progress` does. Only in a library built with the `progress` feature.
     #[cfg(feature = "progress")]
     pub fn zucc_apply_with_progress(
         old_data: *const u8,
@@ -116,6 +117,7 @@ unsafe extern "C" {
         progress: Option<zucc_progress_fn>,
         context: *mut c_void,
         step: f64,
+        min_interval: f64,
     ) -> c_int;
     pub fn zucc_last_error() -> *const c_char;
     pub fn zucc_set_log_level(level: c_int);

@@ -37,7 +37,7 @@ it with the same features.
 
 | Feature (`zucchini`) | Effect (times are for a 177 MB PE's apply) |
 |---|---|
-| `progress` | `generate_with_progress`, `apply_with_progress` and `apply_into_with_progress` report the fraction done, once per `step` crossed, and can cancel, through the C API's `zucc_*_with_progress` |
+| `progress` | `generate_with_progress`, `apply_with_progress` and `apply_into_with_progress` report the fraction done, as often as a `ProgressRate` allows, and can cancel, through the C API's `zucc_*_with_progress` |
 | `vector-containers` | `std::vector` instead of `std::deque`: about 1.1 s less with MSVC's standard library; needs contiguous memory for the offset arrays |
 | `radix-sort` | radix sorts the offset arrays (turns on `vector-containers`): about 0.25 s less, for a scratch copy of each array while it sorts |
 | `crc32-hook` | `zucchini::set_crc32` chooses the whole-file CRC-32, through the C API's `zucc_set_crc32` |
