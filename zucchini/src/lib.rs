@@ -26,9 +26,8 @@
 //!   report the fraction done to a closure each time it crosses a multiple of the `step` they
 //!   take, and stop with [`Error::Cancelled`] when it returns `ControlFlow::Break`. Cancelling
 //!   waits for the next call, so a smaller step cancels sooner, and with a step of 0 the closure
-//!   runs often enough to check a flag another thread sets. A few steps run without calling it,
-//!   such as finding the executables in each file: for a 145 MB executable, generating can take up
-//!   to 5 s to stop and applying 1.5 s.
+//!   runs often enough to check a flag another thread sets: on Chromium's test executables and on
+//!   32 MB of raw data, no stretch without a call took more than about 2% of the work.
 //! - `vector-containers`: `std::vector` instead of `std::deque` for Zucchini's offset arrays, which
 //!   matters most with MSVC's standard library (about 1.1 s less of a 177 MB PE's apply).
 //! - `radix-sort` (turns on `vector-containers`): radix sorts those arrays (about 0.25 s less).

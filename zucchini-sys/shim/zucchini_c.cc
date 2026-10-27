@@ -99,6 +99,8 @@ class ProgressCall {
   Progress progress_;
   Progress* saved_;
 };
+
+using zucchini_rs::ProgressSteps;
 #else
 // Without patches/progress.patch, Zucchini reports nothing, and the C API takes no callback.
 class ProgressCall {
@@ -107,7 +109,14 @@ class ProgressCall {
   void Start() {}
   void Finish() {}
 };
+
+struct ProgressSteps {
+  void Next(double) {}
+};
 #endif
+
+// Share of generating that the CRC-32s of both files take, so progress rises evenly.
+constexpr double kGenerateCrc32Share = 0.01;
 
 #ifdef ZUCCHINI_RS_CRC32_HOOK
 std::atomic<zucc_crc32_fn> g_crc32{nullptr};
@@ -174,7 +183,11 @@ int Generate(const uint8_t* old_data, size_t old_len, const uint8_t* new_data, s
     }
     ProgressCall progress_call(progress, context, step);
     progress_call.Start();
+    // The patch writer starts with each file's CRC-32, a sliver of the time generating takes.
+    ProgressSteps steps;
+    steps.Next(kGenerateCrc32Share);
     auto patch = std::make_unique<zucc_patch>(old_image, new_image);
+    steps.Next(1);
     zucchini::status::Code status =
         zucchini::GenerateBuffer(old_image, new_image, generate_options, &patch->writer);
     if (status == zucchini::status::kStatusSuccess) {
