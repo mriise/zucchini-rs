@@ -37,15 +37,18 @@ fn exe_pair() -> (Vec<u8>, Vec<u8>) {
     (testdata("chrome64_1.exe"), testdata("chrome64_2.exe"))
 }
 
-/// Checks one run's reports: from 0, never falling, ending at a single 100, through many steps.
-fn check_reports(reports: &[u8]) {
-    assert_eq!(reports.first(), Some(&0));
-    assert!(reports.windows(2).all(|pair| pair[0] <= pair[1]), "reports fell: {reports:?}");
-    assert_eq!(reports.iter().filter(|&&percent| percent == 100).count(), 1);
-    assert_eq!(reports.last(), Some(&100));
-    let mut distinct = reports.to_vec();
-    distinct.dedup();
-    assert!(distinct.len() > 20, "only {} distinct percentages: {distinct:?}", distinct.len());
+/// Reports every percent.
+const STEP: f64 = 0.01;
+
+/// Checks one run's reports at `STEP`: from 0, each in a later percent than the last, ending at a
+/// single 1, through many steps.
+fn check_reports(reports: &[f64]) {
+    assert_eq!(reports.first(), Some(&0.0));
+    let percents: Vec<f64> = reports.iter().map(|done| (done * 100.0).floor()).collect();
+    assert!(percents.windows(2).all(|pair| pair[0] < pair[1]), "reports repeat a percent: {reports:?}");
+    assert_eq!(reports.iter().filter(|&&done| done >= 1.0).count(), 1);
+    assert_eq!(reports.last(), Some(&1.0));
+    assert!(reports.len() > 60, "only {} reports: {reports:?}", reports.len());
 }
 
 #[test]
@@ -53,8 +56,8 @@ fn generate_reports_progress_and_makes_the_same_patch() {
     let (old, new) = exe_pair();
     for options in [GenerateOptions::default(), GenerateOptions { raw: true, ..GenerateOptions::default() }] {
         let mut reports = Vec::new();
-        let patch = generate_with_progress(&old, &new, &options, |percent| {
-            reports.push(percent);
+        let patch = generate_with_progress(&old, &new, &options, STEP, |done| {
+            reports.push(done);
             ControlFlow::Continue(())
         })
         .unwrap();
@@ -69,8 +72,8 @@ fn apply_reports_progress_and_makes_the_same_file() {
     let patch = generate(&old, &new).unwrap();
 
     let mut reports = Vec::new();
-    let result = apply_with_progress(&old, &patch, MAX_LEN, |percent| {
-        reports.push(percent);
+    let result = apply_with_progress(&old, &patch, MAX_LEN, STEP, |done| {
+        reports.push(done);
         ControlFlow::Continue(())
     })
     .unwrap();
@@ -78,34 +81,55 @@ fn apply_reports_progress_and_makes_the_same_file() {
     assert_eq!(result, new);
 
     let mut into = vec![0; new.len()];
-    let mut last = 0;
-    apply_into_with_progress(&old, &patch, &mut into, |percent| {
-        last = percent;
+    let mut last = 0.0;
+    apply_into_with_progress(&old, &patch, &mut into, STEP, |done| {
+        last = done;
         ControlFlow::Continue(())
     })
     .unwrap();
-    assert_eq!((last, into), (100, new));
+    assert_eq!((last, into), (1.0, new));
+}
+
+#[test]
+fn a_step_of_zero_reports_every_move_and_a_large_one_only_the_ends() {
+    let (old, new) = exe_pair();
+    let mut every = Vec::new();
+    generate_with_progress(&old, &new, &GenerateOptions::default(), 0.0, |done| {
+        every.push(done);
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+    assert!(every.windows(2).all(|pair| pair[0] < pair[1]), "reports did not rise: {every:?}");
+    assert!(every.len() > 1000, "only {} reports", every.len());
+
+    let mut ends = Vec::new();
+    generate_with_progress(&old, &new, &GenerateOptions::default(), 2.0, |done| {
+        ends.push(done);
+        ControlFlow::Continue(())
+    })
+    .unwrap();
+    assert_eq!(ends, [0.0, 1.0]);
 }
 
 #[test]
 fn breaking_cancels_at_any_point() {
     let (old, new) = exe_pair();
     let patch = generate(&old, &new).unwrap();
-    for stop_at in [0, 1, 50, 99, 100] {
+    for stop_at in [0.0, 0.01, 0.5, 0.99, 1.0] {
         let mut calls_after_break = 0;
         let mut broke = false;
-        let result = generate_with_progress(&old, &new, &GenerateOptions::default(), |percent| {
+        let result = generate_with_progress(&old, &new, &GenerateOptions::default(), STEP, |done| {
             calls_after_break += u32::from(broke);
-            broke |= percent >= stop_at;
+            broke |= done >= stop_at;
             if broke { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
         });
-        assert_eq!(result, Err(Error::Cancelled), "generate stopping at {stop_at}%");
+        assert_eq!(result, Err(Error::Cancelled), "generate stopping at {stop_at}");
         assert_eq!(calls_after_break, 0);
 
-        let result = apply_with_progress(&old, &patch, MAX_LEN, |percent| {
-            if percent >= stop_at { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+        let result = apply_with_progress(&old, &patch, MAX_LEN, STEP, |done| {
+            if done >= stop_at { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
         });
-        assert_eq!(result, Err(Error::Cancelled), "apply stopping at {stop_at}%");
+        assert_eq!(result, Err(Error::Cancelled), "apply stopping at {stop_at}");
     }
     // Nothing is left behind on this thread.
     assert_eq!(apply(&old, &patch).unwrap(), new);
@@ -117,8 +141,8 @@ fn a_panic_in_progress_resumes_after_zucchini_unwinds() {
     let mut new = old.clone();
     new[1_000..2_000].fill(0);
     let caught = panic::catch_unwind(|| {
-        generate_with_progress(&old, &new, &GenerateOptions::default(), |percent| {
-            assert!(percent < 30, "stop here");
+        generate_with_progress(&old, &new, &GenerateOptions::default(), STEP, |done| {
+            assert!(done < 0.3, "stop here");
             ControlFlow::Continue(())
         })
     })
@@ -135,12 +159,12 @@ fn zucchini_can_be_called_from_inside_progress() {
     let small = noise(20_000, 3);
     let mut reports = Vec::new();
     let mut inner = 0;
-    let patch = generate_with_progress(&old, &new, &GenerateOptions::default(), |percent| {
-        reports.push(percent);
-        if percent >= 50 && inner == 0 {
+    let patch = generate_with_progress(&old, &new, &GenerateOptions::default(), STEP, |done| {
+        reports.push(done);
+        if done >= 0.5 && inner == 0 {
             inner += 1;
             let inner_patch =
-                generate_with_progress(&small, &old[..20_000], &GenerateOptions::default(), |_| {
+                generate_with_progress(&small, &old[..20_000], &GenerateOptions::default(), 0.0, |_| {
                     ControlFlow::Continue(())
                 })
                 .unwrap();
@@ -152,6 +176,6 @@ fn zucchini_can_be_called_from_inside_progress() {
     assert_eq!(inner, 1);
     // The outer call's reports carry on from where they were, not from the inner call's.
     assert!(reports.windows(2).all(|pair| pair[0] <= pair[1]), "{reports:?}");
-    assert_eq!(reports.last(), Some(&100));
+    assert_eq!(reports.last(), Some(&1.0));
     assert_eq!(apply(&old, &patch).unwrap(), new);
 }

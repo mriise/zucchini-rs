@@ -12,17 +12,19 @@ use zucchini_sys as sys;
 use crate::{Error, GenerateOptions};
 
 /// Makes a patch like [`generate_with`](crate::generate_with), calling `progress` with the
-/// percentage done as it goes.
+/// fraction done as it goes.
 ///
-/// `progress` runs often on this thread, with a percentage from 0 to 100 that never falls and often
-/// repeats; 100 comes only once the patch is made. Returning [`ControlFlow::Break`] stops the work
-/// with [`Error::Cancelled`]. A panic in `progress` stops it too, and resumes once Zucchini has
-/// unwound.
+/// `progress` runs on this thread with a fraction from 0 to 1 that rises with each call: 0 first,
+/// then each time the work crosses a multiple of `step` (0.01 for each percent, 0 for every move),
+/// and 1 only once the patch is made. Returning [`ControlFlow::Break`] stops the work with
+/// [`Error::Cancelled`], though only at a call, so a large `step` cancels late. A panic in
+/// `progress` stops it too, and resumes once Zucchini has unwound.
 pub fn generate_with_progress(
     old: &[u8],
     new: &[u8],
     options: &GenerateOptions,
-    mut progress: impl FnMut(u8) -> ControlFlow<()>,
+    step: f64,
+    mut progress: impl FnMut(f64) -> ControlFlow<()>,
 ) -> Result<Vec<u8>, Error> {
     crate::generate_inner(old, new, options, |c_options, handle| {
         with_progress(&mut progress, |callback, context| {
@@ -38,6 +40,7 @@ pub fn generate_with_progress(
                     c_options,
                     Some(callback),
                     context,
+                    step,
                     handle,
                 )
             }
@@ -47,25 +50,27 @@ pub fn generate_with_progress(
 
 /// Applies `patch` to `old` like [`apply_bounded`](crate::apply_bounded) (pass
 /// [`MAX_LEN`](crate::MAX_LEN) for [`apply`](crate::apply)'s bound), calling `progress` with the
-/// percentage done as [`generate_with_progress`] does.
+/// fraction done every `step` as [`generate_with_progress`] does.
 pub fn apply_with_progress(
     old: &[u8],
     patch: &[u8],
     max_new: usize,
-    mut progress: impl FnMut(u8) -> ControlFlow<()>,
+    step: f64,
+    mut progress: impl FnMut(f64) -> ControlFlow<()>,
 ) -> Result<Vec<u8>, Error> {
     crate::apply_bounded_inner(old, patch, max_new, |new| {
-        apply_into_with_progress(old, patch, new, &mut progress)
+        apply_into_with_progress(old, patch, new, step, &mut progress)
     })
 }
 
 /// Applies `patch` to `old` like [`apply_into`](crate::apply_into), calling `progress` with the
-/// percentage done as [`generate_with_progress`] does.
+/// fraction done every `step` as [`generate_with_progress`] does.
 pub fn apply_into_with_progress(
     old: &[u8],
     patch: &[u8],
     new: &mut [u8],
-    mut progress: impl FnMut(u8) -> ControlFlow<()>,
+    step: f64,
+    mut progress: impl FnMut(f64) -> ControlFlow<()>,
 ) -> Result<(), Error> {
     crate::apply_into_inner(patch, new, |new| {
         with_progress(&mut progress, |callback, context| {
@@ -81,6 +86,7 @@ pub fn apply_into_with_progress(
                     new.len(),
                     Some(callback),
                     context,
+                    step,
                 )
             }
         })
@@ -89,14 +95,14 @@ pub fn apply_into_with_progress(
 
 /// The context the C API passes back to [`report_progress`].
 struct Reporter<'a> {
-    progress: &'a mut dyn FnMut(u8) -> ControlFlow<()>,
+    progress: &'a mut dyn FnMut(f64) -> ControlFlow<()>,
     panic: Option<Box<dyn Any + Send>>,
 }
 
 /// Runs `call` with the C progress callback and context that report to `progress`, and resumes a
 /// panic from `progress` once the call has returned.
 fn with_progress(
-    progress: &mut dyn FnMut(u8) -> ControlFlow<()>,
+    progress: &mut dyn FnMut(f64) -> ControlFlow<()>,
     call: impl FnOnce(sys::zucc_progress_fn, *mut c_void) -> c_int,
 ) -> c_int {
     let mut reporter = Reporter { progress, panic: None };
@@ -107,12 +113,12 @@ fn with_progress(
     code
 }
 
-unsafe extern "C" fn report_progress(context: *mut c_void, percent: c_int) -> c_int {
+unsafe extern "C" fn report_progress(context: *mut c_void, done: f64) -> c_int {
     // SAFETY: `with_progress` passes a `Reporter` that outlives the call making this one, and the C
     // API calls back only on that call's thread.
     let reporter = unsafe { &mut *context.cast::<Reporter<'_>>() };
     // Zucchini stops at the first nonzero return, so a closure that panicked is not called again.
-    match panic::catch_unwind(AssertUnwindSafe(|| (reporter.progress)(percent as u8))) {
+    match panic::catch_unwind(AssertUnwindSafe(|| (reporter.progress)(done))) {
         Ok(ControlFlow::Continue(())) => 0,
         Ok(ControlFlow::Break(())) => 1,
         Err(payload) => {

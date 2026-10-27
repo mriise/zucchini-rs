@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -44,9 +45,12 @@ thread_local std::string g_last_error;
 struct Progress {
   zucc_progress_fn callback;
   void* context;
+  double step;
   double lo = 0;
   double hi = 1;
-  int percent = 0;
+  // The furthest reported so far, and where the next report is due.
+  double done = 0;
+  double next = 0;
 };
 
 thread_local Progress* g_progress = nullptr;
@@ -54,27 +58,39 @@ thread_local Progress* g_progress = nullptr;
 // Installs a progress callback, or none, for the rest of the scope.
 class ProgressCall {
  public:
-  ProgressCall(zucc_progress_fn callback, void* context)
-      : progress_{callback, context}, saved_(g_progress) {
+  ProgressCall(zucc_progress_fn callback, void* context, double step)
+      : progress_{callback, context, step}, saved_(g_progress) {
     g_progress = callback ? &progress_ : nullptr;
   }
   ProgressCall(const ProgressCall&) = delete;
   ProgressCall& operator=(const ProgressCall&) = delete;
   ~ProgressCall() { g_progress = saved_; }
 
-  // Reports 0%, which the callback may cancel at.
+  // Reports 0, which the callback may cancel at.
   void Start() { zucchini_rs::ReportProgress(0); }
 
-  // Reports 100%, which only a call that has done all its work does.
+  // Reports 1, which only a call that has done all its work does, whatever the step.
   void Finish() {
     if (g_progress) {
-      Report(100);
+      g_progress->next = 0;
+      Report(1);
     }
   }
 
-  static void Report(int percent) {
-    g_progress->percent = std::max(g_progress->percent, percent);
-    if (g_progress->callback(g_progress->context, g_progress->percent)) {
+  // Calls the callback with done, unless the call has not yet crossed the next multiple of its
+  // step since the last report, or has not moved at all.
+  static void Report(double done) {
+    Progress& progress = *g_progress;
+    progress.done = std::max(progress.done, done);
+    if (progress.done < progress.next) {
+      return;
+    }
+    double next = std::nextafter(progress.done, 2.0);
+    if (progress.step > 0) {
+      next = std::max(next, (std::floor(progress.done / progress.step) + 1) * progress.step);
+    }
+    progress.next = next;
+    if (progress.callback(progress.context, progress.done)) {
       throw zucchini_rs::Cancelled();
     }
   }
@@ -87,7 +103,7 @@ class ProgressCall {
 // Without patches/progress.patch, Zucchini reports nothing, and the C API takes no callback.
 class ProgressCall {
  public:
-  ProgressCall(zucc_progress_fn, void*) {}
+  ProgressCall(zucc_progress_fn, void*, double) {}
   void Start() {}
   void Finish() {}
 };
@@ -133,7 +149,7 @@ zucchini::ConstBufferView View(const uint8_t* data, size_t size) {
 
 int Generate(const uint8_t* old_data, size_t old_len, const uint8_t* new_data, size_t new_len,
              const zucc_generate_options* options, zucc_progress_fn progress, void* context,
-             zucc_patch** patch_out) {
+             double step, zucc_patch** patch_out) {
   if (!patch_out || (!old_data && old_len) || (!new_data && new_len)) {
     return ZUCC_INVALID_PARAM;
   }
@@ -156,7 +172,7 @@ int Generate(const uint8_t* old_data, size_t old_len, const uint8_t* new_data, s
         generate_options.imposed_matches = options->imposed_matches;
       }
     }
-    ProgressCall progress_call(progress, context);
+    ProgressCall progress_call(progress, context, step);
     progress_call.Start();
     auto patch = std::make_unique<zucc_patch>(old_image, new_image);
     zucchini::status::Code status =
@@ -170,7 +186,8 @@ int Generate(const uint8_t* old_data, size_t old_len, const uint8_t* new_data, s
 }
 
 int Apply(const uint8_t* old_data, size_t old_len, const uint8_t* patch, size_t patch_len,
-          uint8_t* new_out, size_t new_len, zucc_progress_fn progress, void* context) {
+          uint8_t* new_out, size_t new_len, zucc_progress_fn progress, void* context,
+          double step) {
   if ((!old_data && old_len) || (!patch && patch_len) || (!new_out && new_len)) {
     return ZUCC_INVALID_PARAM;
   }
@@ -186,7 +203,7 @@ int Apply(const uint8_t* old_data, size_t old_len, const uint8_t* patch, size_t 
     if (reader->header().new_size != new_len) {
       return ZUCC_BUFFER_SIZE;
     }
-    ProgressCall progress_call(progress, context);
+    ProgressCall progress_call(progress, context, step);
     progress_call.Start();
     zucchini::status::Code status = zucchini::ApplyBuffer(
         View(old_data, old_len), *reader, zucchini::MutableBufferView(new_out, new_len));
@@ -233,8 +250,8 @@ void ReportProgress(double fraction) {
   }
   double span = g_progress->hi - g_progress->lo;
   double done = g_progress->lo + span * std::clamp(fraction, 0.0, 1.0);
-  // 100% waits for ProgressCall::Finish, after the last step has succeeded.
-  ProgressCall::Report(std::min(static_cast<int>(done * 100), 99));
+  // 1 waits for ProgressCall::Finish, after the last step has succeeded.
+  ProgressCall::Report(std::min(done, std::nextafter(1.0, 0.0)));
 }
 
 }  // namespace zucchini_rs
@@ -258,14 +275,15 @@ extern "C" {
 
 int zucc_generate(const uint8_t* old_data, size_t old_len, const uint8_t* new_data, size_t new_len,
                   const zucc_generate_options* options, zucc_patch** patch_out) {
-  return Generate(old_data, old_len, new_data, new_len, options, nullptr, nullptr, patch_out);
+  return Generate(old_data, old_len, new_data, new_len, options, nullptr, nullptr, 0, patch_out);
 }
 
 #ifdef ZUCCHINI_RS_PROGRESS
 int zucc_generate_with_progress(const uint8_t* old_data, size_t old_len, const uint8_t* new_data,
                                 size_t new_len, const zucc_generate_options* options,
-                                zucc_progress_fn progress, void* context, zucc_patch** patch_out) {
-  return Generate(old_data, old_len, new_data, new_len, options, progress, context, patch_out);
+                                zucc_progress_fn progress, void* context, double step,
+                                zucc_patch** patch_out) {
+  return Generate(old_data, old_len, new_data, new_len, options, progress, context, step, patch_out);
 }
 #endif
 
@@ -324,14 +342,14 @@ int zucc_read_header(const uint8_t* patch, size_t patch_len, zucc_patch_header* 
 
 int zucc_apply(const uint8_t* old_data, size_t old_len, const uint8_t* patch, size_t patch_len,
                uint8_t* new_out, size_t new_len) {
-  return Apply(old_data, old_len, patch, patch_len, new_out, new_len, nullptr, nullptr);
+  return Apply(old_data, old_len, patch, patch_len, new_out, new_len, nullptr, nullptr, 0);
 }
 
 #ifdef ZUCCHINI_RS_PROGRESS
 int zucc_apply_with_progress(const uint8_t* old_data, size_t old_len, const uint8_t* patch,
                              size_t patch_len, uint8_t* new_out, size_t new_len,
-                             zucc_progress_fn progress, void* context) {
-  return Apply(old_data, old_len, patch, patch_len, new_out, new_len, progress, context);
+                             zucc_progress_fn progress, void* context, double step) {
+  return Apply(old_data, old_len, patch, patch_len, new_out, new_len, progress, context, step);
 }
 #endif
 

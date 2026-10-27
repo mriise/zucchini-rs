@@ -23,11 +23,12 @@
 //! and results are byte-identical with or without them:
 //!
 //! - `progress`: `generate_with_progress`, `apply_with_progress` and `apply_into_with_progress`
-//!   report the percentage done to a closure as they go, and stop with [`Error::Cancelled`] when it
-//!   returns `ControlFlow::Break`. The closure runs often, so checking a flag another thread sets
-//!   is a responsive way to cancel. A few steps run without calling it, such as finding the
-//!   executables in each file: for a 145 MB executable, generating can take up to 5 s to stop and
-//!   applying 1.5 s.
+//!   report the fraction done to a closure each time it crosses a multiple of the `step` they
+//!   take, and stop with [`Error::Cancelled`] when it returns `ControlFlow::Break`. Cancelling
+//!   waits for the next call, so a smaller step cancels sooner, and with a step of 0 the closure
+//!   runs often enough to check a flag another thread sets. A few steps run without calling it,
+//!   such as finding the executables in each file: for a 145 MB executable, generating can take up
+//!   to 5 s to stop and applying 1.5 s.
 //! - `vector-containers`: `std::vector` instead of `std::deque` for Zucchini's offset arrays, which
 //!   matters most with MSVC's standard library (about 1.1 s less of a 177 MB PE's apply).
 //! - `radix-sort` (turns on `vector-containers`): radix sorts those arrays (about 0.25 s less).

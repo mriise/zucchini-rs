@@ -63,18 +63,20 @@ typedef struct zucc_patch_header {
 int zucc_generate(const uint8_t* old_data, size_t old_len, const uint8_t* new_data, size_t new_len,
                   const zucc_generate_options* options, zucc_patch** patch_out);
 
-/* Told how far a generate or apply has got, as a percentage from 0 to 100 that never falls. Called
- * often, on the calling thread, with the same percentage many times over; 100 comes only once the
- * work has succeeded. Returns nonzero to cancel, and the call then returns ZUCC_CANCELLED. Must not
- * throw a C++ exception. */
-typedef int (*zucc_progress_fn)(void* context, int percent);
+/* Told how far a generate or apply has got, as a fraction from 0 to 1 that rises with each call.
+ * Called on the calling thread with 0 first, then each time the work crosses a multiple of the
+ * call's step (each time it moves at all for a step of 0), and with 1 only once the work has
+ * succeeded. Returns nonzero to cancel, and the call then returns ZUCC_CANCELLED. Must not throw a
+ * C++ exception. */
+typedef int (*zucc_progress_fn)(void* context, double done);
 
-/* zucc_generate, reporting to progress (with context) as it goes. progress may be NULL. Only in a
- * library built with zucchini-sys's progress feature (ZUCCHINI_RS_PROGRESS defined); prebuilt
- * libraries do not have it. */
+/* zucc_generate, reporting to progress (with context) as it goes, every step (0.01 for each
+ * percent). progress may be NULL. Only in a library built with zucchini-sys's progress feature
+ * (ZUCCHINI_RS_PROGRESS defined); prebuilt libraries do not have it. */
 int zucc_generate_with_progress(const uint8_t* old_data, size_t old_len, const uint8_t* new_data,
                                 size_t new_len, const zucc_generate_options* options,
-                                zucc_progress_fn progress, void* context, zucc_patch** patch_out);
+                                zucc_progress_fn progress, void* context, double step,
+                                zucc_patch** patch_out);
 
 /* Serialized size of a generated patch in bytes. */
 size_t zucc_patch_size(const zucc_patch* patch);
@@ -96,7 +98,7 @@ int zucc_apply(const uint8_t* old_data, size_t old_len, const uint8_t* patch, si
  * condition as zucc_generate_with_progress. */
 int zucc_apply_with_progress(const uint8_t* old_data, size_t old_len, const uint8_t* patch,
                              size_t patch_len, uint8_t* new_out, size_t new_len,
-                             zucc_progress_fn progress, void* context);
+                             zucc_progress_fn progress, void* context, double step);
 
 /* Message for the calling thread's last ZUCC_CHECK_FAILED or ZUCC_FATAL, or "". Valid until the
  * thread's next call into this API. */
