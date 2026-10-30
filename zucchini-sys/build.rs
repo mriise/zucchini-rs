@@ -29,10 +29,12 @@ const LIB: &str = "zucchini";
 
 /// Unified diffs in `patches/` that build.rs applies, in this order, to copies of Chromium files,
 /// with the Cargo feature that turns each on. Each file's header says what it changes and why.
-/// Only the libstdc++ fix applies by default; the others change Zucchini's code for speed, and
-/// patches and results stay byte-identical with or without them.
+/// Only the libstdc++ fix always applies. The others are opt-in changes to Zucchini's code, for
+/// progress reports or speed, and patches and results stay byte-identical with or without them.
+/// Each applies with or without the ones before it, except where noted.
 const PATCHES: &[(&str, Option<&str>)] = &[
     ("libstdcxx-span.patch", None),
+    ("progress.patch", Some("progress")),
     ("vector-containers.patch", Some("vector-containers")),
     // Written against the vector-containers result; the feature turns that one on too.
     ("radix-sort.patch", Some("radix-sort")),
@@ -74,7 +76,7 @@ fn main() {
     #[cfg(feature = "prebuilt")]
     if !env_flag("ZUCCHINI_SYS_FROM_SOURCE") {
         // Prebuilt archives are built without the optional patches: linking one would quietly drop
-        // a speed-up, or fail to link zucc_set_crc32.
+        // a speed-up, or fail to link zucc_set_crc32 or the progress functions.
         let features: Vec<&str> = enabled_patches().into_iter().filter_map(|(_, feature)| feature).collect();
         if !features.is_empty() {
             let features = features.join("`, `");
@@ -146,6 +148,10 @@ fn build_from_source(manifest: &Path, out: &Path, target: &str) {
     }
     if !env_flag("ZUCCHINI_SYS_DCHECK") {
         build.define("NDEBUG", None);
+    }
+    if patches.iter().any(|(_, feature)| *feature == Some("progress")) {
+        // shim/zucchini_c.cc then defines the progress functions progress.patch declares.
+        build.define("ZUCCHINI_RS_PROGRESS", None);
     }
     if patches.iter().any(|(_, feature)| *feature == Some("crc32-hook")) {
         // shim/zucchini_c.cc then defines zucc_set_crc32 and the CalculateCrc32 that calls it.
